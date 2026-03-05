@@ -140,14 +140,18 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
         critique = eval_result.get("critique", "")
         issues = eval_result.get("specific_fixes_required", [])
         
-        log_stage("JUDGING", f"Attempt {retries + 1}/{max_retries + 1}: Pass={passes}, Critique={critique}")
+        log_stage("JUDGING", f"Attempt {retries + 1}/{max_retries + 1}: Pass={passes}, Critique={critique}, Issues={issues}")
         
         if passes or retries >= max_retries:
             break
             
         log_stage("REVISION", f"Draft rejected. Retrying Draft generation with feedback...")
         
-        draft_outline = await generate_draft_outline(llm_config, summaries, critique=critique)
+        combined_critique = critique
+        if issues:
+            combined_critique += "\n\nSpecific fixes required:\n" + "\n".join(f"- {i}" for i in issues)
+
+        draft_outline = await generate_draft_outline(llm_config, summaries, critique=combined_critique)
         retries += 1
         
     # 3. Final Report Generation
@@ -163,14 +167,17 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
     _write_report(str(output_path), report)
     
     # Write artifacts summary
-    issues = ["Draft failed judging criteria"] if not  eval_result.get("passes_criteria", True) else []
+    final_issues = eval_result.get("specific_fixes_required", []) if not eval_result.get("passes_criteria", True) else []
+    if not eval_result.get("passes_criteria", True) and not final_issues:
+        final_issues = ["Draft failed judging criteria"]
+        
     _write_artifacts(
         str(output_path),
         input_data=input_data,
         summaries=summaries,
         excluded=excluded,
         crawl_failures=crawl_failures,
-        issues=issues,
+        issues=final_issues,
         run_id=run_id,
         evaluation=eval_result,
         drafts={"draft_outline": draft_outline},
