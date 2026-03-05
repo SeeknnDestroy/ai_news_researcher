@@ -1,6 +1,0 @@
-crawl4ai
-PyYAML
-dateparser
-beautifulsoup4
-python-dotenv
-pypdf

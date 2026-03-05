@@ -4,8 +4,9 @@ import re
 from typing import List, Optional
 
 from .config import CrawlItem
-from .llm import XAIConfig, LLMError, generate_json
-from .utils import clamp_text, log_stage
+from .llm import XAIConfig, LLMError, generate_json, generate_json_async
+from .utils import clamp_text_tokens, log_stage
+from .templates.prompts import NEWSLETTER_SPLIT_SYSTEM_PROMPT, newsletter_split_user_prompt
 
 
 def split_newsletter_items(
@@ -19,8 +20,50 @@ def split_newsletter_items(
 
     log_stage("SPLIT_DEBUG", f"Attempting to split newsletter: {item.url}")
     trimmed = _trim_newsletter_text(item.text)
-    trimmed = clamp_text(trimmed, 18000)
+    trimmed = clamp_text_tokens(trimmed, 8000)
     extracted = _llm_split_markers(config, trimmed, max_items)
+    if not extracted:
+        log_stage("SPLIT_DEBUG", "LLM failed to return valid split markers")
+    
+    segments = _segments_from_markers(trimmed, extracted, max_items)
+
+    if not segments:
+        log_stage("SPLIT_DEBUG", "Marker extraction failed, falling back to heuristic extraction")
+        segments = _extract_items(trimmed, max_items)
+
+    results: List[CrawlItem] = []
+    for entry in segments:
+        title = entry.get("title") or item.title or "Haber"
+        url = entry.get("url") or _first_link(entry.get("text", "")) or item.url
+        text = entry.get("text") or ""
+        if not text.strip():
+            continue
+        results.append(
+            CrawlItem(
+                url=url,
+                text=text.strip(),
+                metadata={},
+                title=str(title).strip(),
+                origin_url=item.origin_url or item.url,
+            )
+        )
+
+    return results or [item]
+
+
+async def split_newsletter_items_async(
+    config: XAIConfig,
+    item: CrawlItem,
+    max_items: int = 6,
+) -> List[CrawlItem]:
+    if not _is_newsletter(item.text, item.url):
+        log_stage("SPLIT_DEBUG", f"Skipping {item.url} - identified as NOT a newsletter")
+        return [item]
+
+    log_stage("SPLIT_DEBUG", f"Attempting to split newsletter: {item.url}")
+    trimmed = _trim_newsletter_text(item.text)
+    trimmed = clamp_text_tokens(trimmed, 8000)
+    extracted = await _llm_split_markers_async(config, trimmed, max_items)
     if not extracted:
         log_stage("SPLIT_DEBUG", "LLM failed to return valid split markers")
     
@@ -59,12 +102,6 @@ def _is_newsletter(text: str, url: str) -> bool:
     return has_required_phrase and has_required_domain
 
 
-_SPLIT_SYSTEM_PROMPT = (
-    "You are a precise newsletter segmenter. "
-    "Work extractively: copy markers exactly from text, never paraphrase. "
-    "Return ONLY valid JSON in the requested schema."
-)
-
 
 def _trim_newsletter_text(text: str) -> str:
     if not text:
@@ -90,30 +127,26 @@ def _trim_newsletter_text(text: str) -> str:
 
 
 def _llm_split_markers(config: XAIConfig, text: str, max_items: int) -> List[dict]:
-    user_prompt = f"""
-Identify up to {max_items} article blocks in the newsletter below.
-Return ONLY JSON with this schema:
-{{
-  "items": [
-    {{"title": "...", "start_marker": "...", "end_marker": "...", "url": "https://..." }}
-  ]
-}}
-
-Rules:
-- Use ONLY substrings copied from the text for start_marker/end_marker.
-- start_marker should be a 5-20 word phrase near the beginning of the article.
-- end_marker should be a 5-20 word phrase near the end of the article (can be empty).
-- Do NOT rewrite content or summarize.
-- Skip ads, subscription offers, and promos.
-- If URL is unclear, leave it empty.
-- Do not fabricate markers or URLs.
-
-Newsletter text:
-"""
-    user_prompt = user_prompt + text
+    user_prompt = newsletter_split_user_prompt(max_items, text)
 
     try:
-        data = generate_json(config=config, system=_SPLIT_SYSTEM_PROMPT, user=user_prompt)
+        data = generate_json(config=config, system=NEWSLETTER_SPLIT_SYSTEM_PROMPT, user=user_prompt)
+    except LLMError:
+        return []
+
+    if not isinstance(data, dict):
+        return []
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return []
+    return [entry for entry in items if isinstance(entry, dict)]
+
+
+async def _llm_split_markers_async(config: XAIConfig, text: str, max_items: int) -> List[dict]:
+    user_prompt = newsletter_split_user_prompt(max_items, text)
+
+    try:
+        data = await generate_json_async(config=config, system=NEWSLETTER_SPLIT_SYSTEM_PROMPT, user=user_prompt)
     except LLMError:
         return []
 

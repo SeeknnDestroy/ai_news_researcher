@@ -19,10 +19,10 @@ class CrawlError(RuntimeError):
 
 def crawl_urls(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
     """Return (items, failures)."""
-    return asyncio.run(_crawl_urls_async(urls, max_concurrency=max_concurrency))
+    return asyncio.run(crawl_urls_async(urls, max_concurrency=max_concurrency))
 
 
-async def _crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
+async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
     try:
         from crawl4ai import (
             AsyncWebCrawler,
@@ -139,14 +139,12 @@ def _crawl_pdf(url: str) -> CrawlItem | None:
 
 def _extract_pdf_text(url: str) -> str:
     try:
-        request = urllib.request.Request(
-            url=url,
-            headers={"User-Agent": "ai-news-researcher/0.1", "Accept": "application/pdf,*/*"},
-            method="GET",
-        )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = response.read()
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        with httpx.Client(timeout=60) as client:
+            headers = {"User-Agent": "ai-news-researcher/0.1", "Accept": "application/pdf,*/*"}
+            response = client.get(url, headers=headers, follow_redirects=True)
+            response.raise_for_status()
+            data = response.content
+    except (httpx.RequestError, httpx.HTTPStatusError):
         return ""
 
     if not data:

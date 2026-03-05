@@ -1,0 +1,112 @@
+Metadata-Version: 2.4
+Name: ai-news-researcher
+Version: 0.1.0
+Summary: GenAI weekly report generator
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: crawl4ai
+Requires-Dist: pyyaml
+Requires-Dist: dateparser
+Requires-Dist: beautifulsoup4
+Requires-Dist: python-dotenv
+Requires-Dist: pypdf
+Requires-Dist: httpx
+Requires-Dist: tenacity
+Requires-Dist: tiktoken
+Requires-Dist: pydantic-settings
+Requires-Dist: typer
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+
+# AI News Researcher
+
+A GenAI-powered CLI application designed to crawl news articles, summarize them, and synthesize high-signal weekly technical AI reports for executive and engineering teams.
+
+Features advanced capabilities including:
+- **LLM-as-a-Judge Evaluation:** Automated adherence grading to rubrics.
+- **Self-Correction & Revision:** Self-healing pipelines when reports fail to meet quality thresholds.
+- **Asynchronous Processing:** Concurrent LLM queries utilizing `asyncio`.
+- **Token-Aware Truncations:** Accurate processing using `tiktoken`.
+
+## Prerequisites
+
+- **Python 3.10+** (Recommend **Python 3.13**)
+- **uv** (or `pip`) for dependency management
+- An active API key for **xAI** (or compatible LLM endpoints)
+
+## Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/SeeknnDestroy/ai_news_researcher.git
+   cd ai_news_researcher
+   ```
+
+2. **Install dependencies:**
+   This project uses `pyproject.toml` to manage dependencies.
+
+   Using `uv` (recommended):
+   ```bash
+   uv venv
+   source .venv/bin/activate
+   uv pip install -e .
+   ```
+
+   *Alternatively, using `pip`:*
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install httpx tenacity tiktoken pydantic-settings typer pytest-asyncio
+   ```
+
+## Configuration
+
+The application uses `pydantic-settings` to load configuration automatically from environment variables or a `.env` file.
+
+1. Create a `.env` file at the root of the project:
+   ```bash
+   touch .env
+   ```
+
+2. Add your **xAI API Key** to the `.env` file:
+   ```env
+   XAI_API_KEY="xai-your-api-key-here"
+   ```
+
+### Optional Settings
+You can override default evaluation thresholds by adding them to the `.env` file:
+- `EVAL_REVISION_THRESHOLD` (default: 80.0)
+- `EVAL_GROUNDEDNESS_THRESHOLD` (default: 70.0)
+- `EVAL_COVERAGE_THRESHOLD` (default: 50.0)
+
+## Usage
+
+The main interface is powered by Typer and executed through `src/cli.py`.
+
+### Generating a Report
+
+Prepare an input YAML file (e.g., `inputs/links.yaml`) following the config schema and then run:
+
+```bash
+python -m src.cli run --model grok-4-1-fast-reasoning --max-concurrency 5
+```
+
+By default it expects a `.yaml` configuration to govern the current run inputs (e.g. `inputs/links_DD-MM-YYYY.yaml`). Check the `./inputs/` directory to construct new ones.
+
+**CLI Options:**
+- `--model <model_name>`: Change the xAI model (default: `grok-4-1-fast-reasoning`)
+- `--temperature <float>`: Sampling temperature (default: `0.2`)
+- `--max-concurrency <int>`: Restrict maximum simultaneous crawls (default: `3`)
+
+### Artifacts and Output
+- **Reports:** The final summarized markdown document will be written to `outputs/`.
+- **Artifacts:** Debug logs, drafts, crawler text snapshots, and newsletter splits will be persisted in `artifacts/run_<timestamp>/`.
+
+## Development & Testing
+
+To run the automated tests and ensure the deterministic and LLM logic functions correctly:
+
+```bash
+pytest tests/ -v
+```
