@@ -48,10 +48,6 @@ async def generate_json_async(config: XAIConfig, system: str, user: str) -> Dict
         return json.loads(extracted)
 
 
-def generate_text(config: XAIConfig, system: str, user: str) -> str:
-    return complete(config=config, system=system, user=user, response_format=None)
-
-
 async def generate_text_async(config: XAIConfig, system: str, user: str) -> str:
     return await complete_async(config=config, system=system, user=user, response_format=None)
 

@@ -9,3 +9,7 @@ reports/
 artifacts/
 inputs/
 .conda/
+*.egg-info/
+.venv/
+uv.lock
+*.pdf

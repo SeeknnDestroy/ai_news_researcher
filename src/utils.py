@@ -20,13 +20,6 @@ def source_name_from_url(url: str) -> str:
     return base.replace("-", " ").title()
 
 
-def clamp_text(text: str, max_chars: int) -> str:
-    """Deprecated: Use clamp_text_tokens instead."""
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 3].rstrip() + "..."
-
-
 def clamp_text_tokens(text: str, max_tokens: int, model_name: str = "gpt-4o") -> str:
     """Safely truncates text to fit within a specific token count."""
     if not text:
