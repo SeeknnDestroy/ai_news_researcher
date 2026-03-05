@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,7 +14,7 @@
             --card-bg: rgba(30, 41, 59, 0.7);
             --border: rgba(255, 255, 255, 0.1);
         }
-        
+
         * {
             box-sizing: border-box;
             margin: 0;
@@ -29,10 +30,10 @@
             align-items: center;
             justify-content: center;
             padding: 2rem;
-            background-image: 
-                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
-                radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
-                radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
+            background-image:
+                radial-gradient(at 0% 0%, hsla(253, 16%, 7%, 1) 0, transparent 50%),
+                radial-gradient(at 50% 0%, hsla(225, 39%, 30%, 1) 0, transparent 50%),
+                radial-gradient(at 100% 0%, hsla(339, 49%, 30%, 1) 0, transparent 50%);
             background-attachment: fixed;
         }
 
@@ -58,6 +59,7 @@
             text-align: center;
             background: linear-gradient(to right, #60a5fa, #a78bfa);
             -webkit-background-clip: text;
+            background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
@@ -94,7 +96,7 @@
             border-radius: 50%;
             margin-right: 1rem;
             background: #475569;
-            box-shadow: 0 0 0 rgba(0,0,0,0);
+            box-shadow: 0 0 0 rgba(0, 0, 0, 0);
         }
 
         .active .status-indicator {
@@ -135,152 +137,187 @@
         }
 
         @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+            }
+
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+            }
+
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+            }
         }
 
         /* Order defines logical pipeline */
-        [data-id="LOAD_INPUT"] { order: 1; }
-        [data-id="CRAWL"] { order: 2; }
-        [data-id="SUMMARIZE"] { order: 3; }
-        [data-id="DRAFT_AGENT"] { order: 4; }
-        [data-id="JUDGE_AGENT"] { order: 5; }
-        [data-id="REVISION"] { order: 6; }
-        [data-id="FINAL_AGENT"] { order: 7; }
-        [data-id="WRITE_OUTPUT"] { order: 8; }
-        
-    </style>
-</head>
-<body>
-
-<div class="container">
-    <div class="glass-panel">
-        <h1>Pipeline Status Tracker</h1>
-        
-        <div class="stages" id="stages-container">
-            <!-- Stages will be populated/updated via JS -->
-            <div class="stage-item" data-id="STARTING">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Initializing</div>
-                   <div class="stage-desc">Warming up engines...</div>
-               </div>
-            </div>
-            
-            <div class="stage-item" data-id="LOAD_INPUT">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Loading Inputs</div>
-                   <div class="stage-desc">Reading YAML targets</div>
-               </div>
-            </div>
-
-            <div class="stage-item" data-id="CRAWL">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Web Crawling</div>
-                   <div class="stage-desc">Fetching articles concurrently</div>
-               </div>
-            </div>
-
-            <div class="stage-item" data-id="DRAFT_AGENT">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Draft Outline Generation</div>
-                   <div class="stage-desc">AI orchestrating narrative flow</div>
-               </div>
-            </div>
-
-            <div class="stage-item" data-id="JUDGING">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Judge Evaluation</div>
-                   <div class="stage-desc">Checking headings and tone</div>
-               </div>
-            </div>
-            
-            <div class="stage-item" data-id="REVISION">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Draft Revision (If Needed)</div>
-                   <div class="stage-desc">Fixing issues found by Judge</div>
-               </div>
-            </div>
-
-            <div class="stage-item" data-id="FINAL_AGENT">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Final Report Synthesis</div>
-                   <div class="stage-desc">Writing the polished output</div>
-               </div>
-            </div>
-            
-             <div class="stage-item" data-id="WRITE_OUTPUT">
-               <div class="status-indicator"></div>
-               <div class="stage-content">
-                   <div class="stage-name">Complete</div>
-                   <div class="stage-desc">Artifacts and Markdown written</div>
-               </div>
-            </div>
-        </div>
-
-        <div class="current-log" id="current-log">
-            > Waiting for pipeline to start...
-        </div>
-    </div>
-</div>
-
-<script>
-    const evtSource = new EventSource("/stream");
-    const stagesContainer = document.getElementById('stages-container');
-    const currentLog = document.getElementById('current-log');
-    
-    // Ordered list of expected stages to mark previous as completed
-    const stageOrder = [
-        "STARTING", "LOAD_INPUT", "CRAWL", "SPLIT_NEWSLETTER", 
-        "DRAFT_AGENT", "JUDGING", "REVISION", "FINAL_AGENT", "WRITE_OUTPUT"
-    ];
-
-    let currentStageIndex = -1;
-
-    evtSource.addEventListener("update", function(event) {
-        const data = JSON.parse(event.data);
-        const activeStage = data.stage;
-        
-        currentLog.innerText = `> [${activeStage}] ${data.message}`;
-
-        // Find the index of the active stage
-        const newIndex = stageOrder.indexOf(activeStage);
-        
-        if (newIndex > currentStageIndex) {
-            currentStageIndex = newIndex;
+        [data-id="LOAD_INPUT"] {
+            order: 1;
         }
 
-        // Update UI classes
-        const stageElements = document.querySelectorAll('.stage-item');
-        
-        stageElements.forEach(el => {
-            const elId = el.getAttribute('data-id');
-            const elIndex = stageOrder.indexOf(elId);
-            
-            // Remove active
-            el.classList.remove('active');
-            
-            if (elId === activeStage) {
-                el.classList.add('active');
-                el.classList.remove('completed');
-                el.querySelector('.stage-desc').innerText = data.message;
-            } else if (elIndex < currentStageIndex && elIndex !== -1) {
-                el.classList.add('completed');
-            }
-        });
-    });
+        [data-id="CRAWL"] {
+            order: 2;
+        }
 
-    evtSource.onerror = function(err) {
-        console.error("EventSource failed:", err);
-    };
-</script>
+        [data-id="SUMMARIZE"] {
+            order: 3;
+        }
+
+        [data-id="DRAFT_AGENT"] {
+            order: 4;
+        }
+
+        [data-id="JUDGE_AGENT"] {
+            order: 5;
+        }
+
+        [data-id="REVISION"] {
+            order: 6;
+        }
+
+        [data-id="FINAL_AGENT"] {
+            order: 7;
+        }
+
+        [data-id="WRITE_OUTPUT"] {
+            order: 8;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <div class="glass-panel">
+            <h1>Pipeline Status Tracker</h1>
+
+            <div class="stages" id="stages-container">
+                <!-- Stages will be populated/updated via JS -->
+                <div class="stage-item" data-id="STARTING">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Initializing</div>
+                        <div class="stage-desc">Warming up engines...</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="LOAD_INPUT">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Loading Inputs</div>
+                        <div class="stage-desc">Reading YAML targets</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="CRAWL">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Web Crawling</div>
+                        <div class="stage-desc">Fetching articles concurrently</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="DRAFT_AGENT">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Draft Outline Generation</div>
+                        <div class="stage-desc">AI orchestrating narrative flow</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="JUDGING">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Judge Evaluation</div>
+                        <div class="stage-desc">Checking headings and tone</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="REVISION">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Draft Revision (If Needed)</div>
+                        <div class="stage-desc">Fixing issues found by Judge</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="FINAL_AGENT">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Final Report Synthesis</div>
+                        <div class="stage-desc">Writing the polished output</div>
+                    </div>
+                </div>
+
+                <div class="stage-item" data-id="WRITE_OUTPUT">
+                    <div class="status-indicator"></div>
+                    <div class="stage-content">
+                        <div class="stage-name">Complete</div>
+                        <div class="stage-desc">Artifacts and Markdown written</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="current-log" id="current-log">
+                > Waiting for pipeline to start...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const evtSource = new EventSource("/stream");
+        const stagesContainer = document.getElementById('stages-container');
+        const currentLog = document.getElementById('current-log');
+
+        // Ordered list of expected stages to mark previous as completed
+        const stageOrder = [
+            "STARTING", "LOAD_INPUT", "CRAWL", "SPLIT_NEWSLETTER",
+            "DRAFT_AGENT", "JUDGING", "REVISION", "FINAL_AGENT", "WRITE_OUTPUT"
+        ];
+
+        let currentStageIndex = -1;
+
+        evtSource.addEventListener("update", function (event) {
+            const data = JSON.parse(event.data);
+            const activeStage = data.stage;
+
+            currentLog.innerText = `> [${activeStage}] ${data.message}`;
+
+            // Find the index of the active stage
+            const newIndex = stageOrder.indexOf(activeStage);
+
+            if (newIndex > currentStageIndex) {
+                currentStageIndex = newIndex;
+            }
+
+            // Update UI classes
+            const stageElements = document.querySelectorAll('.stage-item');
+
+            stageElements.forEach(el => {
+                const elId = el.getAttribute('data-id');
+                const elIndex = stageOrder.indexOf(elId);
+
+                // Remove active
+                el.classList.remove('active');
+
+                if (elId === activeStage) {
+                    el.classList.add('active');
+                    el.classList.remove('completed');
+                    el.querySelector('.stage-desc').innerText = data.message;
+                } else if (elIndex < currentStageIndex && elIndex !== -1) {
+                    el.classList.add('completed');
+                }
+            });
+        });
+
+        evtSource.onerror = function (err) {
+            console.error("EventSource failed:", err);
+        };
+    </script>
 
 </body>
+
 </html>
