@@ -148,11 +148,12 @@ MISSION CRITICAL REQUIREMENTS:
 Return ONLY valid JSON representing the outline structure.
 """
 
-def draft_agent_user_prompt(summaries_yaml: str, critique: str = "") -> str:
+def draft_agent_user_prompt(summaries_yaml: str, critique: str = "", previous_draft: str = "") -> str:
     critique_section = f"\nCRITICAL JUDGE FEEDBACK TO FIX IN THIS DRAFT:\n{critique}\n" if critique else ""
+    previous_draft_section = f"\nYOUR PREVIOUS REJECTED DRAFT (fix the issues the Judge identified, keep what was good):\n{previous_draft}\n" if previous_draft else ""
     return f"""
 Create a first draft/outline from the following article summaries.
-{critique_section}
+{critique_section}{previous_draft_section}
 
 JSON Schema (Exact matches only):
 {{
@@ -160,7 +161,7 @@ JSON Schema (Exact matches only):
   "introduction_commentary": "Your overarching thought on this week's news",
   "themes": [
     {{
-      "theme_name": "1. Theme Name in Turkish (e.g. 1. Agentik SDLC ve Kodlama Otomasyonu)",
+      "theme_name": "1. Theme Name in Turkish (e.g. 1. Agentic SDLC ve Kodlama Otomasyonu)",
       "theme_commentary": "Optional introductory text for the theme.",
       "articles": [
         {{

@@ -154,7 +154,7 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
             
         previous_critiques_history += f"Attempt {retries + 1} Critique:\n{combined_critique}\n\n"
 
-        draft_outline = await generate_draft_outline(llm_config, summaries, critique=combined_critique)
+        draft_outline = await generate_draft_outline(llm_config, summaries, critique=combined_critique, previous_draft=draft_outline)
         retries += 1
         
     # 3. Final Report Generation
