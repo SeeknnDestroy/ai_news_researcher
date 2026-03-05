@@ -6,7 +6,7 @@ from typing import List
 from ..config import SummaryItem, ExcludedItem
 from ..llm import XAIConfig, generate_text_async
 from ..templates.prompts import FINAL_REPORT_AGENT_SYSTEM_PROMPT, final_report_agent_user_prompt
-from ..utils import log_stage
+from ..utils import log_stage, format_date
 
 async def generate_final_report(
     config: XAIConfig,
@@ -26,6 +26,7 @@ async def generate_final_report(
     for s in summaries:
         summaries_text.append(f"- URL: {s.url}")
         summaries_text.append(f"  Source: {s.source_name}")
+        summaries_text.append(f"  Date: {format_date(s.date)}")
         summaries_text.append(f"  Title: {s.title}")
         summaries_text.append(f"  Gelişme: {s.summary_tr}")
         summaries_text.append(f"  Neden Önemli: {s.why_it_matters_tr}\n")

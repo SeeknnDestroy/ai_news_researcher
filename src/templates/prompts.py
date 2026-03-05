@@ -137,12 +137,13 @@ You are an expert AI Report Architect and Managing Editor for a high-priority, p
 Your job is to read multiple summarized AI news articles and create a FIRST DRAFT / OUTLINE of the weekly report.
 
 MISSION CRITICAL REQUIREMENTS:
-1. SORTING: You MUST place the most important, industry-shaking news at the very top.
-2. HEADINGS: Headings must be extremely concise, punchy, and professional. NO clickbait, NO mysterious phrasing, NO long garbage sentences.
+1. THEMES: You MUST group the articles into coherent, numbered themes (e.g., "1. Agentik SDLC ve Kodlama Otomasyonu", "2. Güvenlik ve Yönetişim"). Every article must logically belong to a theme.
+2. SORTING: You MUST place the most important, industry-shaking news at the very top.
+3. HEADINGS: Headings must be extremely concise, punchy, and professional. NO clickbait, NO mysterious phrasing.
    Good Example: "Gemini Takes the Lead" or "OpenAI Releases GPT-4.5"
    Bad Example: "A New Era in AI: How Google is Shaping the Future with Their Latest Release"
-3. FLOW AND CONNECTION: You MUST connect the articles together with smooth, logical transitions. Add your own professional commentary and logic to create a cohesive narrative, rather than just isolated bullet points.
-4. OUTLINE FORMAT: This is a FIRST DRAFT / OUTLINE. Do not write the entire 500-word deep dive for each article, but DO establish the structural flow, the headings, the connective tissue, and a brief description of what each section will cover.
+4. FLOW: Connect the articles together logically within their themes.
+5. OUTLINE FORMAT: This is a FIRST DRAFT / OUTLINE. Do not write the entire 500-word deep dive for each article, but DO establish the structural flow, the themes, the headings, the connective tissue, and a brief description of what each section will cover.
 
 Return ONLY valid JSON representing the outline structure.
 """
@@ -155,20 +156,24 @@ JSON Schema (Exact matches only):
 {{
   "report_title": "Concise Weekly Report Title",
   "introduction_commentary": "Your overarching thought on this week's news",
-  "sections": [
+  "themes": [
     {{
-      "heading": "Extremely concise subheader (e.g., 'Gemini Takes the Lead')",
-      "news_urls_included": ["url1", "url2"],
-      "connective_commentary": "Your logical connection and flow explaining why these items are grouped and their overarching impact.",
-      "content_plan": "Brief outline of what facts will be covered here from the summaries."
+      "theme_name": "1. Theme Name in Turkish (e.g. 1. Agentik SDLC ve Kodlama Otomasyonu)",
+      "theme_commentary": "Optional introductory text for the theme.",
+      "articles": [
+        {{
+          "heading": "Extremely concise subheader (e.g., 'Gemini Takes the Lead')",
+          "news_urls_included": ["url1", "url2"],
+          "content_plan": "Brief outline of what facts will be covered here from the summaries."
+        }}
+      ]
     }}
   ]
 }}
 
 Remember:
-- Order the sections by IMPORTANCE (most critical first).
+- Order the themes and articles by IMPORTANCE (most critical first).
 - Headings MUST be professional and concise.
-- Provide smooth flow between news items.
 
 Summaries:
 {summaries_yaml}
@@ -210,12 +215,17 @@ You are the Final Synthesis Writer for a high-signal GenAI technical report.
 You will receive an approved Outline, the Original Summaries, and potentially Judges' critique.
 Your job is to bring the Outline to life by writing the FULL REPORT in professional Turkish.
 
-Formatting rules:
+CRITICAL FORMATTING RULES (DO NOT DEVIATE):
 - Use Markdown.
-- Use the exact headings provided in the Outline.
-- Incorporate the Outline's connective commentary to weave the news together smoothly.
+- Start with the main title as `# [report_title]` followed by the `introduction_commentary`.
+- Output each Theme as an H2 (`## 1. Theme Name`) and include its `theme_commentary` if present.
+- Output each article's heading exactly as an H3 that is underlined and bold: `### <u>**Your Heading Here**</u>`.
+- UNDER EACH ARTICLE HEADING, you MUST output a bulleted list with EXACTLY these 4 items (in this order):
+  * **Tarih:** [Date from the original summary]
+  * **Kaynak:** [[Source Name](URL)]
+  * **Gelişme:** [Technical summary, with strategic **bolding** of key metrics, sizes, % increases. Do not bold the whole sentence.]
+  * **Neden Önemli:** [Strategic importance. If relevant to Banking/SDLC/Efficiency, mention it clearly but don't force it.]
 - Fleshen out the details using ONLY facts from the Original Summaries. Do not hallucinate.
-- Use inline links for citations where appropriate.
 - Keep the tone clinical, technical, and executive-friendly.
 """
 
