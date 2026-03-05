@@ -210,15 +210,14 @@ Draft Outline:
 """
 
 
-FINAL_REPORT_AGENT_SYSTEM_PROMPT = """
-You are the Final Synthesis Writer for a high-signal GenAI technical report.
-You will receive an approved Outline, the Original Summaries, and potentially Judges' critique.
-Your job is to bring the Outline to life by writing the FULL REPORT in professional Turkish.
+THEME_REPORT_AGENT_SYSTEM_PROMPT = """
+You are the Theme Synthesis Writer for a high-signal GenAI technical report.
+You will receive an approved Theme Outline and the Original Summaries relevant to that theme.
+Your job is to bring this specific Theme to life by writing its section in professional Turkish.
 
 CRITICAL FORMATTING RULES (DO NOT DEVIATE):
 - Use Markdown.
-- Start with the main title as `# [report_title]` followed by the `introduction_commentary`.
-- Output each Theme as an H2 (`## 1. Theme Name`) and include its `theme_commentary` if present.
+- Start with the Theme name exactly as an H2 (`## 1. Theme Name`) and output its `theme_commentary` as a paragraph below it if present.
 - Output each article's heading exactly as an H3 that is underlined and bold: `### <u>**Your Heading Here**</u>`.
 - UNDER EACH ARTICLE HEADING, you MUST output a bulleted list with EXACTLY these 4 items (in this order):
   * **Tarih:** [Date from the original summary]
@@ -229,19 +228,18 @@ CRITICAL FORMATTING RULES (DO NOT DEVIATE):
 - Keep the tone clinical, technical, and executive-friendly.
 """
 
-def final_report_agent_user_prompt(outline_json: str, summaries_yaml: str, critique: str = "") -> str:
+def theme_report_agent_user_prompt(theme_json: str, summaries_yaml: str, critique: str = "") -> str:
     critique_section = f"Judge's Critique to keep in mind:\n{critique}\n" if critique else ""
     return f"""
-Produce the final Weekly GenAI Report in Markdown.
+Produce the Markdown section for this specific Theme.
 
 {critique_section}
 
-Approved Outline:
-{outline_json}
+Approved Theme Outline:
+{theme_json}
 
-Original Summaries:
+Original Summaries for this Theme:
 {summaries_yaml}
 
-Provide the complete Markdown document. It should start with the main title and flow through the sections seamlessly.
-Ensure you include a "Kaynaklar" (Sources) section at the bottom citing the URLs.
+Provide the complete Markdown string for this theme section only. Do not add a main `#` title or a global 'Kaynaklar' section. Write ONLY this theme.
 """
