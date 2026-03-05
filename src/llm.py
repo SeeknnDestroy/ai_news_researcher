@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
+import httpx
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from .config import settings
 
 class LLMError(RuntimeError):
     pass
@@ -15,12 +16,12 @@ class LLMError(RuntimeError):
 
 @dataclass(frozen=True)
 class XAIConfig:
-    model: str = "grok-4-1-fast-reasoning"
-    temperature: float = 0.2
+    model: str = field(default_factory=lambda: settings.xai_model)
+    temperature: float = field(default_factory=lambda: settings.xai_temperature)
     reasoning_effort: Optional[str] = "low"
-    api_key: Optional[str] = None
-    base_url: str = "https://api.x.ai/v1"
-    timeout_s: int = 60
+    api_key: Optional[str] = field(default_factory=lambda: settings.xai_api_key)
+    base_url: str = field(default_factory=lambda: settings.xai_base_url)
+    timeout_s: int = field(default_factory=lambda: settings.xai_timeout_s)
     user_agent: str = "ai-news-researcher/0.1"
     force_reasoning_effort: bool = False
 
@@ -36,16 +37,26 @@ def generate_json(config: XAIConfig, system: str, user: str) -> Dict[str, Any]:
         return json.loads(extracted)
 
 
+async def generate_json_async(config: XAIConfig, system: str, user: str) -> Dict[str, Any]:
+    raw = await complete_async(config=config, system=system, user=user, response_format="json")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        extracted = _extract_json_object(raw)
+        if extracted is None:
+            raise LLMError("LLM did not return valid JSON.")
+        return json.loads(extracted)
+
+
 def generate_text(config: XAIConfig, system: str, user: str) -> str:
     return complete(config=config, system=system, user=user, response_format=None)
 
 
-def complete(
-    config: XAIConfig,
-    system: str,
-    user: str,
-    response_format: Optional[str] = None,
-) -> str:
+async def generate_text_async(config: XAIConfig, system: str, user: str) -> str:
+    return await complete_async(config=config, system=system, user=user, response_format=None)
+
+
+def _build_request_kwargs(config: XAIConfig, system: str, user: str, response_format: Optional[str]) -> tuple[str, dict, dict]:
     api_key = config.api_key or os.getenv("XAI_API_KEY")
     if not api_key:
         raise LLMError("Missing XAI_API_KEY environment variable.")
@@ -73,52 +84,83 @@ def complete(
         "User-Agent": config.user_agent,
     }
 
-    request = urllib.request.Request(
-        url=f"{config.base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
+    return f"{config.base_url}/chat/completions", headers, payload
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.RequestError)),
+    reraise=True
+)
+def _do_sync_request(url: str, headers: dict, payload: dict, timeout: int) -> dict:
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.RequestError)),
+    reraise=True
+)
+async def _do_async_request(url: str, headers: dict, payload: dict, timeout: int) -> dict:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+def complete(
+    config: XAIConfig,
+    system: str,
+    user: str,
+    response_format: Optional[str] = None,
+) -> str:
+    url, headers, payload = _build_request_kwargs(config, system, user, response_format)
 
     try:
-        with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8") if exc.fp else str(exc)
-        # Retry once without response_format or reasoning_effort if the API rejects them.
+        data = _do_sync_request(url, headers, payload, config.timeout_s)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text
         if _should_retry_without_optional_params(detail, payload):
             payload.pop("response_format", None)
             payload.pop("reasoning_effort", None)
-            return _retry_request(config, api_key, payload, headers)
-        raise LLMError(f"xAI API error: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
+            data = _do_sync_request(url, headers, payload, config.timeout_s)
+        else:
+            raise LLMError(f"xAI API error: {detail}") from exc
+    except httpx.RequestError as exc:
         raise LLMError(f"xAI API request failed: {exc}") from exc
 
-    data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("Unexpected xAI response format.") from exc
 
 
-def _retry_request(config: XAIConfig, api_key: str, payload: Dict[str, Any], headers: Dict[str, str]) -> str:
-    request = urllib.request.Request(
-        url=f"{config.base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
+async def complete_async(
+    config: XAIConfig,
+    system: str,
+    user: str,
+    response_format: Optional[str] = None,
+) -> str:
+    url, headers, payload = _build_request_kwargs(config, system, user, response_format)
 
     try:
-        with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
-            body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8") if exc.fp else str(exc)
-        raise LLMError(f"xAI API error: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
+        data = await _do_async_request(url, headers, payload, config.timeout_s)
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text
+        if _should_retry_without_optional_params(detail, payload):
+            payload.pop("response_format", None)
+            payload.pop("reasoning_effort", None)
+            data = await _do_async_request(url, headers, payload, config.timeout_s)
+        else:
+            raise LLMError(f"xAI API error: {detail}") from exc
+    except httpx.RequestError as exc:
         raise LLMError(f"xAI API request failed: {exc}") from exc
 
-    data = json.loads(body)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:

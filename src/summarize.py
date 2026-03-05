@@ -1,84 +1,45 @@
 from __future__ import annotations
 
 from .config import CrawlItem, SummaryItem
-from .llm import XAIConfig, generate_json
-from .utils import clamp_text, source_name_from_url
-
-
-SYSTEM_PROMPT = """
-You are a senior AI research analyst preparing a weekly GenAI technical report.
-
-Mission:
-- Produce high-signal, decision-support summaries for executives, tech leads, and AI engineers.
-- Prioritize engineering impact over storytelling.
-
-Strict style rules:
-- Output language: Turkish.
-- Tone: clinical, technical, concise, authoritative.
-- No marketing hype. Never use: "game changer", "new era", "revolutionary", "unleashed", "mind-blowing".
-- Prefer concrete facts (benchmarks, costs, latency, parameter size, architecture terms) when present.
-
-Grounding rules:
-- Use only information present in the provided article text.
-- Do not invent numbers, benchmark names, claims, organizations, timelines, or URLs.
-- If a requested detail is not clearly supported, omit it or mark uncertainty briefly.
-- Do not force sector-specific framing.
-
-Priority lenses (apply only when relevant to the source):
-1) Agentic Coding & SDLC transformation.
-2) On-premise feasibility, SLM efficiency, quantization, open weights, sovereignty.
-3) Security, governance, prompt-injection, shadow AI, enterprise controls.
-
-Return ONLY valid JSON.
-""".strip()
+from .llm import XAIConfig, generate_json, generate_json_async
+from .utils import clamp_text_tokens, source_name_from_url
+from .templates.prompts import SUMMARIZE_SYSTEM_PROMPT, summarize_user_prompt
 
 
 def summarize_article(config: XAIConfig, item: CrawlItem, audience: str = "mixed") -> SummaryItem:
     source_name = _source_name(item)
     title = item.title or "(Başlık yok)"
-    article_text = clamp_text(item.text, 8000)
+    article_text = clamp_text_tokens(item.text, 8000)
 
-    user_prompt = f"""
-Görev: Aşağıdaki haberi haftalık GenAI teknik raporu için özetle.
+    user_prompt = summarize_user_prompt(audience, item.url, source_name, title, article_text)
 
-JSON şeması (yalnızca bu anahtarlar):
-{{
-  "title": "string",
-  "source_name": "string",
-  "summary_tr": "string",
-  "why_it_matters_tr": "string",
-  "tags": ["string"],
-  "confidence": 0.0
-}}
+    data = generate_json(config=config, system=SUMMARIZE_SYSTEM_PROMPT, user=user_prompt)
 
-Alan kuralları:
-- title: Türkçe, kısa ve etkili. Kaynak başlığı çevrilebilir.
-- source_name: kaynak adı.
-- summary_tr (Gelişme): 2-3 cümle, yaklaşık 45-90 kelime, teknik ve yoğun; varsa sayısal metrikleri dahil et.
-- why_it_matters_tr (Neden Önemli): 1-2 cümle. Stratejik etkisini açıkla.
-  - Önce genel teknik/ürün/organizasyon etkisini anlat.
-  - Sadece gerçekten ilgiliyse SDLC/verimlilik, on-prem, güvenlik/yönetişim bağlantısı kur.
-  - "Banka", "bankacılık", "finans" gibi sektör referanslarını yalnızca kaynak içeriği bunu açıkça destekliyorsa kullan.
-  - Kaynakta kanıt yoksa sektör bağı kurma.
-- tags: 2-5 adet, küçük harfli kısa etiket.
-- confidence: 0-1 arası; metnin açıklık ve kanıt gücüne göre.
+    return SummaryItem(
+        url=item.url,
+        origin_url=item.origin_url or item.url,
+        source_name=str(data.get("source_name") or source_name),
+        title=str(data.get("title") or title),
+        date=None,  # will be set later
+        date_inferred=False,
+        summary_tr=str(data.get("summary_tr", "")).strip(),
+        why_it_matters_tr=str(data.get("why_it_matters_tr", "")).strip(),
+        tags=_safe_tags(data.get("tags")),
+        confidence=_clamp_confidence(_safe_float(data.get("confidence", 0.0))),
+    )
 
-Güvenilirlik kuralları:
-- Metinde geçmeyen metrik/benchmark/cost bilgisi uydurma.
-- Belirsiz alanları kesinmiş gibi yazma.
-- Markdown, madde imi, ek alan, açıklama metni ekleme.
 
-Bağlam:
-- Audience: {audience} (exec + tech lead + AI engineer karışık)
-- Source URL: {item.url}
-- Source Name: {source_name}
-- Source Title: {title}
+async def summarize_article_async(config: XAIConfig, item: CrawlItem, audience: str = "mixed") -> SummaryItem | None:
+    source_name = _source_name(item)
+    title = item.title or "(Başlık yok)"
+    article_text = clamp_text_tokens(item.text, 8000)
 
-Article text:
-"""
-    user_prompt = user_prompt + article_text
+    user_prompt = summarize_user_prompt(audience, item.url, source_name, title, article_text)
 
-    data = generate_json(config=config, system=SYSTEM_PROMPT, user=user_prompt)
+    try:
+        data = await generate_json_async(config=config, system=SUMMARIZE_SYSTEM_PROMPT, user=user_prompt)
+    except Exception:
+        return None
 
     return SummaryItem(
         url=item.url,

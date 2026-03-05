@@ -1,0 +1,31 @@
+[project]
+name = "ai-news-researcher"
+version = "0.1.0"
+description = "GenAI weekly report generator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "crawl4ai",
+    "pyyaml",
+    "dateparser",
+    "beautifulsoup4",
+    "python-dotenv",
+    "pypdf",
+    "httpx",
+    "tenacity",
+    "tiktoken",
+    "pydantic-settings",
+    "typer",
+    "fastapi>=0.135.1",
+    "sse-starlette>=3.3.2",
+    "uvicorn>=0.41.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

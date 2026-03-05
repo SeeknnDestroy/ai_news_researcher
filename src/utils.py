@@ -5,6 +5,7 @@ import hashlib
 import re
 import time
 from datetime import datetime
+import tiktoken
 
 
 def source_name_from_url(url: str) -> str:
@@ -20,9 +21,27 @@ def source_name_from_url(url: str) -> str:
 
 
 def clamp_text(text: str, max_chars: int) -> str:
+    """Deprecated: Use clamp_text_tokens instead."""
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3].rstrip() + "..."
+
+
+def clamp_text_tokens(text: str, max_tokens: int, model_name: str = "gpt-4o") -> str:
+    """Safely truncates text to fit within a specific token count."""
+    if not text:
+        return ""
+    
+    try:
+        encoding = tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+        
+    tokens = encoding.encode(text)
+    if len(tokens) <= max_tokens:
+        return text
+        
+    return encoding.decode(tokens[:max_tokens]) + "..."
 
 
 def format_date(value) -> str:
@@ -69,6 +88,14 @@ def log_stage(stage: str, message: str = "") -> None:
         payload += f" | {message}"
     payload += f" (+{elapsed:.1f}s)"
     print(payload, flush=True)
+    
+    # Try pushing to tracker if it exists
+    try:
+        from .tracker.server import state
+        if state:
+            state.update(stage, message)
+    except ImportError:
+        pass
 
 
 def log_progress(stage: str, current: int, total: int, message: str = "") -> None:

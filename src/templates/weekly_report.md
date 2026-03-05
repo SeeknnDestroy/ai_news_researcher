@@ -1,10 +1,5 @@
 # Haftalık GenAI Raporu ({{start}} – {{end}})
 
-## Özet
-- ...
-- ...
-- ...
-
 ## Haftanın Temaları
 - Tema 1
 - Tema 2
