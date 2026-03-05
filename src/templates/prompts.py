@@ -7,7 +7,7 @@ Mission:
 - Prioritize engineering impact over storytelling.
 
 Strict style rules:
-- Output language: Turkish.
+- Output language: Turkish, but keep AI/Engineering terms natively in English (e.g., "agentic", "prompt engineering", "fine-tuning", "framework"). Do NOT invent Turkish phonetic versions like "ajantik".
 - Tone: clinical, technical, concise, authoritative.
 - No marketing hype. Never use: "game changer", "new era", "revolutionary", "unleashed", "mind-blowing".
 - Prefer concrete facts (benchmarks, costs, latency, parameter size, architecture terms) when present.
@@ -137,7 +137,7 @@ You are an expert AI Report Architect and Managing Editor for a high-priority, p
 Your job is to read multiple summarized AI news articles and create a FIRST DRAFT / OUTLINE of the weekly report.
 
 MISSION CRITICAL REQUIREMENTS:
-1. THEMES: You MUST group the articles into coherent, numbered themes (e.g., "1. Agentik SDLC ve Kodlama Otomasyonu", "2. Güvenlik ve Yönetişim"). Every article must logically belong to a theme.
+1. THEMES: You MUST group the articles into coherent, numbered themes (e.g., "1. Agentic SDLC ve Kodlama Otomasyonu", "2. Güvenlik ve Yönetişim"). Every article must logically belong to a theme. Keep AI engineering terms in English (use "Agentic" instead of "Ajantik").
 2. SORTING: You MUST place the most important, industry-shaking news at the very top.
 3. HEADINGS: Headings must be extremely concise, punchy, and professional. NO clickbait, NO mysterious phrasing.
    Good Example: "Gemini Takes the Lead" or "OpenAI Releases GPT-4.5"
@@ -189,23 +189,26 @@ The audience is mixed: executives and technical leads at Garanti BBVA Tech.
 Your evaluation criteria:
 1. CONSTANTS: Are the headings concise, BS-free, and understandable? (e.g. "Gemini Takes the Lead" = PASS. "Unveiling the Mysteries of..." = FAIL).
 2. PRIORITIZATION: Is the most important news at the top?
-3. PROFESSIONALISM & OVERFITTING: Is the commentary professional? Ensure the text does NOT overfit or spam the word "banka" (bank) unnaturally just to pander to the audience. It should sound like a global tech report tailored for efficiency in SDLC, not a forced banking newsletter.
+3. PROFESSIONALISM & OVERFITTING: Is the commentary professional? Ensure the text does NOT overfit or spam the word "banka" (bank) unnaturally just to pander to the audience. It should sound like a global tech report tailored for efficiency in SDLC, not a forced banking newsletter. 
+4. LANGUAGE: Is the text written in professional Turkish but keeping standard global tech/AI jargon in English (e.g. "Agentic", not "Ajantik"). Check for any awkward translated tech terms.
 
-You will return a pass/fail judgment and a critique. Return ONLY valid JSON.
+You will return a pass/fail judgment and a critique. Return ONLY valid JSON. Ensure that the critique and fixes are written FIRST to perform Chain-of-Thought, and the pass/fail boolean is evaluated at the end.
 """
 
-def judge_agent_user_prompt(draft_json: str) -> str:
+def judge_agent_user_prompt(draft_json: str, previous_critiques: str = "") -> str:
+    history_section = f"PREVIOUS JUDGE CRITIQUES FOR PAST DRAFTS:\n{previous_critiques}\n" if previous_critiques else ""
     return f"""
 Evaluate the following draft outline for the weekly report.
 
-JSON Schema:
+{history_section}
+JSON Schema (Write your detailed critique first before rendering the final pass/fail decision!):
 {{
-  "passes_criteria": true/false,
-  "critique": "Detailed feedback on what to fix. If it passes, explain why.",
-  "specific_fixes_required": ["Fix 1", "Fix 2"]
+  "critique": "Detailed Chain of Thought feedback on what to fix. If it passes, explain why.",
+  "specific_fixes_required": ["Fix 1", "Fix 2"],
+  "passes_criteria": true/false
 }}
 
-Be strict. If the headings are too long or clickbaity, fail it. If 'banka' is spammed, fail it.
+Be strict. If the headings are too long or clickbaity, fail it. If 'banka' is spammed, fail it. If weird translated English AI jargon is used instead of native English terms, fail it.
 
 Draft Outline:
 {draft_json}

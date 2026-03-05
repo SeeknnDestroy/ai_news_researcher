@@ -133,9 +133,10 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
     max_retries = input_data.eval_enabled and 1 or 0
     retries = 0
     critique = ""
+    previous_critiques_history = ""
     
     while retries <= max_retries:
-        eval_result = await evaluate_draft_outline(llm_config, draft_outline)
+        eval_result = await evaluate_draft_outline(llm_config, draft_outline, previous_critiques_history)
         passes = eval_result.get("passes_criteria", False)
         critique = eval_result.get("critique", "")
         issues = eval_result.get("specific_fixes_required", [])
@@ -150,6 +151,8 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
         combined_critique = critique
         if issues:
             combined_critique += "\n\nSpecific fixes required:\n" + "\n".join(f"- {i}" for i in issues)
+            
+        previous_critiques_history += f"Attempt {retries + 1} Critique:\n{combined_critique}\n\n"
 
         draft_outline = await generate_draft_outline(llm_config, summaries, critique=combined_critique)
         retries += 1
