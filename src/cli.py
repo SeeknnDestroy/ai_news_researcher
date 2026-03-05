@@ -145,12 +145,9 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
         if passes or retries >= max_retries:
             break
             
-        # Give feedback to Draft Agent (simplified iteration by providing the critique)
-        log_stage("REVISION", "Draft rejected. Retrying Draft generation with feedback...")
-        # For simplicity, we can pass critique directly if the prompt allowed it, but here we just
-        # re-run and hope the temperature/randomness or we can append critique to the prompt.
-        # As an enhancement, we'll append it to the system prompt in this iteration block.
-        draft_outline = await generate_draft_outline(llm_config, summaries)
+        log_stage("REVISION", f"Draft rejected. Retrying Draft generation with feedback...")
+        
+        draft_outline = await generate_draft_outline(llm_config, summaries, critique=critique)
         retries += 1
         
     # 3. Final Report Generation

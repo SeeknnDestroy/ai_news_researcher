@@ -8,7 +8,7 @@ from ..llm import XAIConfig, generate_json_async
 from ..templates.prompts import DRAFT_AGENT_SYSTEM_PROMPT, draft_agent_user_prompt
 from ..utils import log_stage
 
-async def generate_draft_outline(config: XAIConfig, summaries: List[SummaryItem]) -> dict:
+async def generate_draft_outline(config: XAIConfig, summaries: List[SummaryItem], critique: str = "") -> dict:
     """
     Takes a list of SummaryItem objects and uses the Draft Agent to generate an outline.
     Order of summaries is arbitrary; the LLM handles prioritizing and sorting.
@@ -25,7 +25,7 @@ async def generate_draft_outline(config: XAIConfig, summaries: List[SummaryItem]
     
     summaries_yaml = "\n".join(summaries_text)
     
-    prompt = draft_agent_user_prompt(summaries_yaml)
+    prompt = draft_agent_user_prompt(summaries_yaml, critique=critique)
     
     response = await generate_json_async(
         config=config,

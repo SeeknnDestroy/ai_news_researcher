@@ -148,9 +148,11 @@ MISSION CRITICAL REQUIREMENTS:
 Return ONLY valid JSON representing the outline structure.
 """
 
-def draft_agent_user_prompt(summaries_yaml: str) -> str:
+def draft_agent_user_prompt(summaries_yaml: str, critique: str = "") -> str:
+    critique_section = f"\nCRITICAL JUDGE FEEDBACK TO FIX IN THIS DRAFT:\n{critique}\n" if critique else ""
     return f"""
 Create a first draft/outline from the following article summaries.
+{critique_section}
 
 JSON Schema (Exact matches only):
 {{
