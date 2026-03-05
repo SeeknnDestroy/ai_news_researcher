@@ -8,17 +8,17 @@ from typing import List
 import typer
 
 from .config import CrawlItem, ExcludedItem, SummaryItem
-from .crawler import CrawlError, crawl_urls, crawl_urls_async
+from .crawler import CrawlError, crawl_urls_async
 from .date_extract import extract_date
 from .ingest import InputError, load_input
 from .llm import XAIConfig
-from .summarize import summarize_article, summarize_article_async
+from .summarize import summarize_article_async
 from .themes import group_themes
-from .newsletter import split_newsletter_items, split_newsletter_items_async
+from .newsletter import split_newsletter_items_async
 from .agents.draft_agent import generate_draft_outline
 from .agents.judge_agent import evaluate_draft_outline
 from .agents.final_report_agent import generate_final_report
-from .utils import format_date, slugify_url, log_progress, log_stage
+from .utils import format_date, slugify_url, log_stage
 from .drafts import write_draft, write_diff
 
 
@@ -250,22 +250,6 @@ def _write_raw_text(out_path: str, crawl_items, run_id: str) -> None:
         file_path = raw_dir / f"{slug}.txt"
         file_path.write_text(item.text or "", encoding="utf-8")
 
-
-def _build_drafts_payload(draft_1_path, draft_2_path, diff_path) -> dict:
-    return {
-        "draft_1_path": str(draft_1_path) if draft_1_path else None,
-        "draft_2_path": str(draft_2_path) if draft_2_path else None,
-        "diff_path": str(diff_path) if diff_path else None,
-    }
-
-
-def _build_evaluation_payload(eval_1, eval_2, selected_name: str, reason: str) -> dict:
-    return {
-        "draft_1": eval_result_to_dict(eval_1),
-        "draft_2": eval_result_to_dict(eval_2) if eval_2 else None,
-        "selected": selected_name,
-        "reason": reason,
-    }
 
 
 def _write_split_items(out_path: str, run_id: str, origin_url: str, items: List[CrawlItem]) -> List[str]:

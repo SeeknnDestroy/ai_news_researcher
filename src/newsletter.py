@@ -4,51 +4,11 @@ import re
 from typing import List, Optional
 
 from .config import CrawlItem
-from .llm import XAIConfig, LLMError, generate_json, generate_json_async
+from .llm import XAIConfig, LLMError, generate_json_async
 from .utils import clamp_text_tokens, log_stage
 from .templates.prompts import NEWSLETTER_SPLIT_SYSTEM_PROMPT, newsletter_split_user_prompt
 
 
-def split_newsletter_items(
-    config: XAIConfig,
-    item: CrawlItem,
-    max_items: int = 6,
-) -> List[CrawlItem]:
-    if not _is_newsletter(item.text, item.url):
-        log_stage("SPLIT_DEBUG", f"Skipping {item.url} - identified as NOT a newsletter")
-        return [item]
-
-    log_stage("SPLIT_DEBUG", f"Attempting to split newsletter: {item.url}")
-    trimmed = _trim_newsletter_text(item.text)
-    trimmed = clamp_text_tokens(trimmed, 8000)
-    extracted = _llm_split_markers(config, trimmed, max_items)
-    if not extracted:
-        log_stage("SPLIT_DEBUG", "LLM failed to return valid split markers")
-    
-    segments = _segments_from_markers(trimmed, extracted, max_items)
-
-    if not segments:
-        log_stage("SPLIT_DEBUG", "Marker extraction failed, falling back to heuristic extraction")
-        segments = _extract_items(trimmed, max_items)
-
-    results: List[CrawlItem] = []
-    for entry in segments:
-        title = entry.get("title") or item.title or "Haber"
-        url = entry.get("url") or _first_link(entry.get("text", "")) or item.url
-        text = entry.get("text") or ""
-        if not text.strip():
-            continue
-        results.append(
-            CrawlItem(
-                url=url,
-                text=text.strip(),
-                metadata={},
-                title=str(title).strip(),
-                origin_url=item.origin_url or item.url,
-            )
-        )
-
-    return results or [item]
 
 
 async def split_newsletter_items_async(
@@ -126,20 +86,6 @@ def _trim_newsletter_text(text: str) -> str:
     return text.strip()
 
 
-def _llm_split_markers(config: XAIConfig, text: str, max_items: int) -> List[dict]:
-    user_prompt = newsletter_split_user_prompt(max_items, text)
-
-    try:
-        data = generate_json(config=config, system=NEWSLETTER_SPLIT_SYSTEM_PROMPT, user=user_prompt)
-    except LLMError:
-        return []
-
-    if not isinstance(data, dict):
-        return []
-    items = data.get("items", [])
-    if not isinstance(items, list):
-        return []
-    return [entry for entry in items if isinstance(entry, dict)]
 
 
 async def _llm_split_markers_async(config: XAIConfig, text: str, max_items: int) -> List[dict]:
