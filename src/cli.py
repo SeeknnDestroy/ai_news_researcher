@@ -18,6 +18,7 @@ from .newsletter import split_newsletter_items_async
 from .agents.draft_agent import generate_draft_outline
 from .agents.judge_agent import evaluate_draft_outline
 from .agents.final_report_agent import generate_final_report
+from .storage_paths import artifacts_root_for_output, dated_report_path, resolve_input_path
 from .utils import format_date, slugify_url, log_stage
 from .drafts import write_draft, write_diff
 
@@ -39,9 +40,8 @@ def run(
 async def run_pipeline_async(model: str, temperature: float, max_concurrency: int) -> None:
     today = datetime.now().date()
     run_id = datetime.now().strftime("%d-%m-%Y_%H%M%S")
-    date_slug = today.strftime("%d-%m-%Y")
-    input_path = Path("inputs") / f"links_{date_slug}.yaml"
-    output_path = Path("reports") / f"{date_slug}_weekly.md"
+    input_path = resolve_input_path(today)
+    output_path = dated_report_path(today)
 
     try:
         input_data = load_input(input_path)
@@ -186,7 +186,8 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
         drafts={"draft_outline": draft_outline},
         newsletter_splits=newsletter_splits,
     )
-    log_stage("WRITE_OUTPUT", f"report={output_path} artifacts=artifacts/run_{run_id}.json")
+    artifact_path = artifacts_root_for_output(output_path) / f"run_{run_id}.json"
+    log_stage("WRITE_OUTPUT", f"report={output_path} artifacts={artifact_path}")
 
 
 def _write_report(out_path: str, report: str) -> None:
@@ -207,7 +208,7 @@ def _write_artifacts(
     drafts: dict,
     newsletter_splits: List[dict],
 ) -> None:
-    artifact_path = Path(out_path).parent.parent / "artifacts" / f"run_{run_id}.json"
+    artifact_path = artifacts_root_for_output(out_path) / f"run_{run_id}.json"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
@@ -242,7 +243,7 @@ def _write_artifacts(
 
 
 def _write_raw_text(out_path: str, crawl_items, run_id: str) -> None:
-    raw_dir = Path(out_path).parent.parent / "artifacts" / "raw" / run_id
+    raw_dir = artifacts_root_for_output(out_path) / "raw" / run_id
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     for item in crawl_items:
@@ -253,7 +254,7 @@ def _write_raw_text(out_path: str, crawl_items, run_id: str) -> None:
 
 
 def _write_split_items(out_path: str, run_id: str, origin_url: str, items: List[CrawlItem]) -> List[str]:
-    base_dir = Path(out_path).parent.parent / "artifacts" / "splits" / run_id
+    base_dir = artifacts_root_for_output(out_path) / "splits" / run_id
     base_dir.mkdir(parents=True, exist_ok=True)
     origin_slug = slugify_url(origin_url)
     split_dir = base_dir / origin_slug
@@ -291,7 +292,7 @@ def _write_split_items(out_path: str, run_id: str, origin_url: str, items: List[
 
 
 def _write_debug_input(out_path: str, run_id: str, item: CrawlItem) -> None:
-    debug_dir = Path(out_path).parent.parent / "artifacts" / "debug_inputs" / run_id
+    debug_dir = artifacts_root_for_output(out_path) / "debug_inputs" / run_id
     debug_dir.mkdir(parents=True, exist_ok=True)
     slug = slugify_url(item.url)
     path = debug_dir / f"{slug}.txt"
