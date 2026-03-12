@@ -8,13 +8,13 @@ import typer
 from .chrome_tabs import ChromeTabsError, capture_chrome_urls
 from .ingest import InputError
 from .link_inputs import write_links_input
+from .storage_paths import dated_input_path
 
 app = typer.Typer(help="Capture Google Chrome tabs into today's input YAML.")
 
 
 def _default_output_path() -> Path:
-    date_slug = datetime.now().strftime("%d-%m-%Y")
-    return Path("inputs") / f"links_{date_slug}.yaml"
+    return dated_input_path(datetime.now().date())
 
 
 @app.command()

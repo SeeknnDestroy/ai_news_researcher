@@ -71,7 +71,7 @@ Prepare an input YAML file (e.g., `inputs/links.yaml`) following the config sche
 python -m src.cli --model grok-4-1-fast-reasoning --max-concurrency 5
 ```
 
-By default it expects a `.yaml` configuration to govern the current run inputs (e.g. `inputs/links_DD-MM-YYYY.yaml`). Check the `./inputs/` directory to construct new ones.
+By default it expects a `.yaml` configuration to govern the current run inputs in monthly folders (e.g. `inputs/2026-03/links_13-03-2026.yaml`). Existing legacy flat files under `inputs/` are still accepted as a fallback.
 
 ### Capturing Chrome Tabs Into Today's Input
 
@@ -83,7 +83,7 @@ python -m src.capture_links_cli
 
 This command:
 - reads tabs from the current frontmost Chrome window
-- writes to `inputs/links_DD-MM-YYYY.yaml`
+- writes to `inputs/YYYY-MM/links_DD-MM-YYYY.yaml`
 - appends new URLs without duplicating ones already in the file
 - creates the file with `evaluation: true` if it does not exist yet
 
@@ -113,7 +113,7 @@ Notes:
 - `--max-concurrency <int>`: Restrict maximum simultaneous crawls (default: `3`)
 
 ### Artifacts and Output
-- **Reports:** The final summarized markdown document will be written to `outputs/`.
+- **Reports:** The final summarized markdown document will be written to `reports/YYYY-MM/`.
 - **Artifacts:** Debug logs, drafts, crawler text snapshots, and newsletter splits will be persisted in `artifacts/run_<timestamp>/`.
 
 ## Development & Testing

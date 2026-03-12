@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from typer.testing import CliRunner
 from src.capture_links_cli import app
 from src.chrome_tabs import ChromeTabsError, _parse_osascript_output, capture_chrome_urls
 from src.link_inputs import write_links_input
+from src.storage_paths import dated_input_path, dated_report_path, resolve_input_path
 
 
 def test_parse_osascript_output_filters_non_web_tabs():
@@ -117,6 +119,36 @@ def test_write_links_input_replace_mode_rebuilds_file(tmp_path: Path):
     )
 
 
+def test_dated_paths_use_monthly_folders():
+    target_date = date(2026, 3, 13)
+
+    assert dated_input_path(target_date) == Path("inputs") / "2026-03" / "links_13-03-2026.yaml"
+    assert dated_report_path(target_date) == Path("reports") / "2026-03" / "13-03-2026_weekly.md"
+
+
+def test_resolve_input_path_prefers_monthly_path(tmp_path: Path):
+    monthly_path = tmp_path / "inputs" / "2026-03" / "links_13-03-2026.yaml"
+    legacy_path = tmp_path / "inputs" / "links_13-03-2026.yaml"
+    monthly_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    monthly_path.write_text('evaluation: true\nurls:\n  - "https://monthly.example/a"\n', encoding="utf-8")
+    legacy_path.write_text('evaluation: true\nurls:\n  - "https://legacy.example/a"\n', encoding="utf-8")
+
+    resolved = resolve_input_path(date(2026, 3, 13), base_dir=tmp_path)
+
+    assert resolved == monthly_path
+
+
+def test_resolve_input_path_falls_back_to_legacy_flat_file(tmp_path: Path):
+    legacy_path = tmp_path / "inputs" / "links_13-03-2026.yaml"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('evaluation: true\nurls:\n  - "https://legacy.example/a"\n', encoding="utf-8")
+
+    resolved = resolve_input_path(date(2026, 3, 13), base_dir=tmp_path)
+
+    assert resolved == legacy_path
+
+
 def test_capture_links_cli_writes_summary_and_file(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     output_path = tmp_path / "inputs" / "links_13-03-2026.yaml"
@@ -145,6 +177,31 @@ def test_capture_links_cli_writes_summary_and_file(tmp_path: Path, monkeypatch):
         '  - "https://captured.example/a"\n'
         '  - "https://captured.example/b"\n'
     )
+
+
+def test_capture_links_cli_default_output_uses_month_folder(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls):
+            from datetime import datetime
+
+            return datetime(2026, 3, 13, 9, 30, 0)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("src.capture_links_cli.datetime", FixedDateTime)
+    monkeypatch.setattr(
+        "src.capture_links_cli.capture_chrome_urls",
+        lambda all_windows=False: ["https://captured.example/a"],
+    )
+
+    result = runner.invoke(app, [])
+
+    expected_path = tmp_path / "inputs" / "2026-03" / "links_13-03-2026.yaml"
+    assert result.exit_code == 0
+    assert f"Target file: {expected_path}" in result.stdout
+    assert expected_path.exists()
 
 
 def test_capture_links_cli_returns_nonzero_on_capture_error(monkeypatch):

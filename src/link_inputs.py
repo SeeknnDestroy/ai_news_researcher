@@ -60,7 +60,7 @@ def write_links_input(
 
     added_count = len(merged_urls) - len(existing_urls if not replace else [])
     return WriteLinksResult(
-        path=output_path,
+        path=output_path.resolve(),
         captured_count=captured_count,
         added_count=added_count,
         duplicate_count=duplicate_count,

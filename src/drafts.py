@@ -4,9 +4,11 @@ import difflib
 from pathlib import Path
 from typing import Iterable
 
+from .storage_paths import artifacts_root_for_output
+
 
 def drafts_dir(out_path: str, run_id: str) -> Path:
-    return Path(out_path).parent.parent / "artifacts" / "drafts" / run_id
+    return artifacts_root_for_output(out_path) / "drafts" / run_id
 
 
 def write_draft(out_path: str, run_id: str, name: str, content: str) -> Path:
