@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
-from src.crawler import _select_markdown_text, crawl_urls
+import httpx
+
+from src.crawler import _extract_pdf_text, _select_markdown_text, crawl_urls
 
 
 def test_select_markdown_text_prefers_fit_markdown():
@@ -38,3 +40,19 @@ def test_crawl_raw_html_filters_chrome_and_keeps_headings():
     assert "## Key details" in text
     assert "Explore Courses" not in text
     assert "Subscribe now" not in text
+
+
+def test_extract_pdf_text_returns_empty_on_request_error(monkeypatch):
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers, follow_redirects):
+            raise httpx.RequestError("network boom", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
+
+    assert _extract_pdf_text("https://example.com/test.pdf") == ""

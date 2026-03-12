@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import io
-import urllib.error
-import urllib.request
+import httpx
 from typing import List, Tuple
 from urllib.parse import urlparse
 
@@ -33,7 +32,7 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
         )
     except Exception as exc:  # pragma: no cover - dependency guard
         raise CrawlError(
-            "crawl4ai is required. Install dependencies in requirements.txt"
+            "crawl4ai is required. Install project dependencies from pyproject.toml."
         ) from exc
 
     browser_config = BrowserConfig(headless=True)
