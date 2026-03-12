@@ -27,5 +27,8 @@ dev = [
     "pytest-asyncio"
 ]
 
+[project.scripts]
+capture-links = "src.capture_links_cli:app"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

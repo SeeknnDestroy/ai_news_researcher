@@ -73,6 +73,40 @@ python -m src.cli --model grok-4-1-fast-reasoning --max-concurrency 5
 
 By default it expects a `.yaml` configuration to govern the current run inputs (e.g. `inputs/links_DD-MM-YYYY.yaml`). Check the `./inputs/` directory to construct new ones.
 
+### Capturing Chrome Tabs Into Today's Input
+
+On macOS, you can generate today's input YAML directly from your open Google Chrome tabs:
+
+```bash
+python -m src.capture_links_cli
+```
+
+This command:
+- reads tabs from the current frontmost Chrome window
+- writes to `inputs/links_DD-MM-YYYY.yaml`
+- appends new URLs without duplicating ones already in the file
+- creates the file with `evaluation: true` if it does not exist yet
+
+Optional flags:
+
+```bash
+python -m src.capture_links_cli --all-windows
+python -m src.capture_links_cli --replace
+python -m src.capture_links_cli --output inputs/links_custom.yaml
+python -m src.capture_links_cli --no-evaluation
+```
+
+If you install the package entrypoints, the same helper is also available as:
+
+```bash
+capture-links
+```
+
+Notes:
+- Only `http://` and `https://` tabs are captured.
+- `chrome://`, extension tabs, and blank tabs are ignored.
+- On first use, macOS may ask for permission to let your terminal control Google Chrome.
+
 **CLI Options:**
 - `--model <model_name>`: Change the xAI model (default: `grok-4-1-fast-reasoning`)
 - `--temperature <float>`: Sampling temperature (default: `0.2`)
