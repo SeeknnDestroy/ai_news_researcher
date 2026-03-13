@@ -123,3 +123,13 @@ To run the automated tests and ensure the deterministic and LLM logic functions 
 ```bash
 pytest tests/ -v
 ```
+
+The live crawl integration test now skips automatically unless a valid `CRAWL_TEST_INPUT` file is available, so a clean local `pytest` run does not depend on private input files.
+
+### Architecture Notes
+
+- `src/config.py` is settings-only.
+- Canonical pipeline orchestration lives in `src/application/pipeline.py`.
+- Canonical content-processing tasks live in `src/application/content_tasks.py`.
+- Canonical report-generation tasks live in `src/application/report_tasks.py`.
+- `src/application/ai_tasks.py`, `src/summarize.py`, `src/newsletter.py`, and `src/agents/*` remain as compatibility shims during the migration cycle and should not be used for new internal code.
