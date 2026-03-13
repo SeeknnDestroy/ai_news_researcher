@@ -39,12 +39,6 @@ class SummaryItem:
 
 
 @dataclass(slots=True)
-class ThemeGroup:
-    name: str
-    item_ids: List[int]
-
-
-@dataclass(slots=True)
 class ExcludedItem:
     url: str
     reason: str

@@ -22,7 +22,6 @@ from .models import (
     PipelineRunResult,
     SummaryItem,
     SummaryStageResult,
-    ThemeGroup,
 )
 
 __all__ = [
@@ -47,5 +46,4 @@ __all__ = [
     "SummaryItem",
     "SummaryPayload",
     "SummaryStageResult",
-    "ThemeGroup",
 ]

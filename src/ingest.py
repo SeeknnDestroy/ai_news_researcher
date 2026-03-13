@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 import yaml
 
-from .config import InputData
+from .domain.models import InputData
 
 
 class InputError(ValueError):
@@ -45,4 +45,3 @@ def _read_yaml(path: str | Path) -> Dict[str, Any]:
 
     with path.open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
-

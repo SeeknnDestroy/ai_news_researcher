@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from .application.ai_tasks import split_newsletter_items_async as _split_newsletter_items_async
-from .config import CrawlItem
+from .application.content_tasks import split_newsletter_items_async as _split_newsletter_items_async
+from .domain.models import CrawlItem
 from .infrastructure.llm_client import XAILLMClient
 from .llm import XAIConfig
 
 
+# Compatibility shim: keep the legacy module surface while the canonical
+# implementation lives under src.application.content_tasks.
 async def split_newsletter_items_async(
     config: XAIConfig,
     item: CrawlItem,

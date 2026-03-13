@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from ..domain.models import DraftWorkflowResult, ExcludedItem, SummaryItem
 from ..infrastructure.events import EventSink, NullEventSink, PipelineEvent
 from ..infrastructure.llm_client import LLMClient
-from .ai_tasks import evaluate_draft_outline, generate_draft_outline, generate_final_report
+from .report_tasks import evaluate_draft_outline, generate_draft_outline, generate_final_report
 
 
 @dataclass(slots=True)
