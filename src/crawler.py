@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from .config import CrawlItem
+from .domain.models import CrawlItem
 
 
 class CrawlError(RuntimeError):
