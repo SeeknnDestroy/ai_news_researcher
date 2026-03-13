@@ -22,7 +22,7 @@ from ..ingest import load_input
 from ..infrastructure.events import CompositeEventSink, ConsoleEventSink, EventSink, NullEventSink, PipelineEvent
 from ..infrastructure.llm_client import LLMClient, StructuredOutputError
 from ..infrastructure.persistence import FileSystemPipelineStore
-from .ai_tasks import split_newsletter_items_async, summarize_article_async
+from .content_tasks import split_newsletter_items_async, summarize_article_async
 from .report_workflow import ReportWorkflowService
 
 
@@ -49,6 +49,22 @@ class SummaryStageComputation:
     validation_failures: list[str]
     fallbacks: list[str]
     debug_dir: Path | None
+
+
+@dataclass(slots=True)
+class PreparedSplitResult:
+    items: list[CrawlItem]
+    newsletter_splits: list[NewsletterSplitResult]
+    validation_failures: list[str]
+    fallbacks: list[str]
+
+
+@dataclass(slots=True)
+class SummaryExecutionResult:
+    summaries: list[SummaryItem]
+    validation_failures: list[str]
+    errors: list[str]
+    debug_paths: list[Path]
 
 
 class PipelineRunner:
@@ -163,27 +179,24 @@ class PipelineRunner:
         output_path: Path,
         run_id: str,
     ) -> SummaryStageComputation:
+        crawl_map, failure_map = self._build_crawl_maps(crawl_result)
+        tasks = [self._process_url(url=url, crawl_map=crawl_map, failure_map=failure_map, output_path=output_path, run_id=run_id) for url in urls]
+        results = await asyncio.gather(*tasks)
+        return self._aggregate_summary_results(results)
+
+    def _build_crawl_maps(self, crawl_result: CrawlStageResult) -> tuple[dict[str, CrawlItem], dict[str, str]]:
         crawl_map = {item.url: item for item in crawl_result.items}
         failure_map = {item.url: item.reason for item in crawl_result.failures}
+        return crawl_map, failure_map
 
-        tasks = [
-            self._process_url(
-                url=url,
-                crawl_map=crawl_map,
-                failure_map=failure_map,
-                output_path=output_path,
-                run_id=run_id,
-            )
-            for url in urls
-        ]
-        results = await asyncio.gather(*tasks)
-
+    def _aggregate_summary_results(self, results: list[UrlProcessingResult]) -> SummaryStageComputation:
         summaries: list[SummaryItem] = []
         excluded: list[ExcludedItem] = []
         newsletter_splits: list[NewsletterSplitResult] = []
         validation_failures: list[str] = []
         fallbacks: list[str] = []
         debug_paths: list[Path] = []
+
         for result in results:
             summaries.extend(result.summaries)
             excluded.extend(result.excluded)
@@ -214,91 +227,153 @@ class PipelineRunner:
         run_id: str,
     ) -> UrlProcessingResult:
         if url in failure_map:
-            return UrlProcessingResult(
-                summaries=[],
-                excluded=[ExcludedItem(url=url, reason=failure_map[url], stage="crawl")],
-                newsletter_splits=[],
-                validation_failures=[],
-                fallbacks=[],
-                debug_paths=[],
-            )
+            return self._excluded_result(url=url, reason=failure_map[url], stage="crawl")
 
         item = crawl_map.get(url)
         if item is None:
-            return UrlProcessingResult(
-                summaries=[],
-                excluded=[ExcludedItem(url=url, reason="crawl result missing", stage="crawl")],
-                newsletter_splits=[],
-                validation_failures=[],
-                fallbacks=[],
-                debug_paths=[],
-            )
+            return self._excluded_result(url=url, reason="crawl result missing", stage="crawl")
 
         date_result = extract_date(item.metadata, item.text, item.url)
+        prepared_split = await self._prepare_split_result(
+            item=item,
+            output_path=output_path,
+            run_id=run_id,
+        )
+        execution = await self._summarize_split_items(
+            items=prepared_split.items,
+            output_path=output_path,
+            run_id=run_id,
+            date_value=date_result.value,
+            date_inferred=date_result.inferred,
+        )
+
+        if execution.summaries:
+            return UrlProcessingResult(
+                summaries=execution.summaries,
+                excluded=[],
+                newsletter_splits=prepared_split.newsletter_splits,
+                validation_failures=prepared_split.validation_failures + execution.validation_failures,
+                fallbacks=prepared_split.fallbacks,
+                debug_paths=execution.debug_paths,
+            )
+
+        return self._excluded_result(
+            url=url,
+            reason=execution.errors[0] if execution.errors else "summary generation failed",
+            stage="summarize",
+            newsletter_splits=prepared_split.newsletter_splits,
+            validation_failures=prepared_split.validation_failures + execution.validation_failures,
+            fallbacks=prepared_split.fallbacks,
+            debug_paths=execution.debug_paths,
+        )
+
+    async def _prepare_split_result(
+        self,
+        *,
+        item: CrawlItem,
+        output_path: Path,
+        run_id: str,
+    ) -> PreparedSplitResult:
         split_result = await split_newsletter_items_async(
             self.llm_client,
             item,
             event_sink=self.event_sink,
         )
-        newsletter_splits: list[NewsletterSplitResult] = []
         validation_failures: list[str] = []
         fallbacks: list[str] = []
+        newsletter_splits: list[NewsletterSplitResult] = []
 
         if split_result.validation_error:
-            validation_failures.append(f"{url}: {split_result.validation_error}")
+            validation_failures.append(f"{item.url}: {split_result.validation_error}")
         if split_result.strategy == "heuristic_fallback":
-            fallbacks.append(f"newsletter_split:{url}")
+            fallbacks.append(f"newsletter_split:{item.url}")
         if len(split_result.items) > 1:
             split_result.artifact_paths = self.store.write_split_items(
                 output_path,
                 run_id,
-                url,
+                item.url,
                 split_result.items,
             )
             newsletter_splits.append(split_result)
-            self._emit("SPLIT_SAVE", f"origin={url} files={len(split_result.artifact_paths)}")
+            self._emit("SPLIT_SAVE", f"origin={item.url} files={len(split_result.artifact_paths)}")
 
+        return PreparedSplitResult(
+            items=split_result.items,
+            newsletter_splits=newsletter_splits,
+            validation_failures=validation_failures,
+            fallbacks=fallbacks,
+        )
+
+    async def _summarize_split_items(
+        self,
+        *,
+        items: list[CrawlItem],
+        output_path: Path,
+        run_id: str,
+        date_value,
+        date_inferred: bool,
+    ) -> SummaryExecutionResult:
         debug_paths: list[Path] = []
         summaries: list[SummaryItem] = []
+        validation_failures: list[str] = []
         errors: list[str] = []
 
-        async def _summarize(item_to_process: CrawlItem) -> SummaryItem | None:
-            debug_paths.append(self.store.write_debug_input(output_path, run_id, item_to_process))
-            return await summarize_article_async(self.llm_client, item_to_process)
-
-        for derived in split_result.items:
+        for item in items:
             try:
-                summary = await _summarize(derived)
+                summary = await self._summarize_item(
+                    item=item,
+                    output_path=output_path,
+                    run_id=run_id,
+                    debug_paths=debug_paths,
+                )
             except StructuredOutputError as exc:
-                validation_failures.append(f"{derived.url}: {exc}")
+                validation_failures.append(f"{item.url}: {exc}")
                 errors.append(str(exc))
                 continue
             except Exception as exc:
                 errors.append(str(exc))
                 continue
 
-            summary.date = date_result.value
-            summary.date_inferred = date_result.inferred
+            summary.date = date_value
+            summary.date_inferred = date_inferred
             summaries.append(summary)
 
-        if summaries:
-            return UrlProcessingResult(
-                summaries=summaries,
-                excluded=[],
-                newsletter_splits=newsletter_splits,
-                validation_failures=validation_failures,
-                fallbacks=fallbacks,
-                debug_paths=debug_paths,
-            )
+        return SummaryExecutionResult(
+            summaries=summaries,
+            validation_failures=validation_failures,
+            errors=errors,
+            debug_paths=debug_paths,
+        )
 
-        reason = errors[0] if errors else "summary generation failed"
+    async def _summarize_item(
+        self,
+        *,
+        item: CrawlItem,
+        output_path: Path,
+        run_id: str,
+        debug_paths: list[Path],
+    ) -> SummaryItem:
+        debug_paths.append(self.store.write_debug_input(output_path, run_id, item))
+        return await summarize_article_async(self.llm_client, item)
+
+    def _excluded_result(
+        self,
+        *,
+        url: str,
+        reason: str,
+        stage: str,
+        newsletter_splits: list[NewsletterSplitResult] | None = None,
+        validation_failures: list[str] | None = None,
+        fallbacks: list[str] | None = None,
+        debug_paths: list[Path] | None = None,
+    ) -> UrlProcessingResult:
         return UrlProcessingResult(
             summaries=[],
-            excluded=[ExcludedItem(url=url, reason=reason, stage="summarize")],
-            newsletter_splits=newsletter_splits,
-            validation_failures=validation_failures,
-            fallbacks=fallbacks,
-            debug_paths=debug_paths,
+            excluded=[ExcludedItem(url=url, reason=reason, stage=stage)],
+            newsletter_splits=newsletter_splits or [],
+            validation_failures=validation_failures or [],
+            fallbacks=fallbacks or [],
+            debug_paths=debug_paths or [],
         )
 
     def _emit(self, stage: str, message: str = "") -> None:
