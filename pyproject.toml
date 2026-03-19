@@ -5,7 +5,6 @@ description = "GenAI weekly report generator"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "crawl4ai",
     "pyyaml",
     "pydantic",
     "dateparser",
