@@ -7,7 +7,7 @@ import httpx
 from typing import List, Tuple
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
+
 
 from .domain.models import CrawlItem
 
@@ -22,44 +22,14 @@ def crawl_urls(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlIte
 
 
 async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
-    try:
-        from crawl4ai import (
-            AsyncWebCrawler,
-            BrowserConfig,
-            CrawlerRunConfig,
-            DefaultMarkdownGenerator,
-            PruningContentFilter,
-        )
-    except Exception as exc:  # pragma: no cover - dependency guard
-        raise CrawlError(
-            "crawl4ai is required. Install project dependencies from pyproject.toml."
-        ) from exc
-
-    browser_config = BrowserConfig(headless=True)
-    run_config = CrawlerRunConfig(
-        remove_overlay_elements=True,
-        word_count_threshold=50,
-        remove_forms=True,
-        excluded_tags=["nav", "footer", "header", "aside", "script", "style"],
-        excluded_selector=(
-            ".ads,.advert,.promo,.newsletter,.subscribe,.share,.social,"
-            ".cookie,.cookies,.banner,.modal,.popup"
-        ),
-        markdown_generator=DefaultMarkdownGenerator(
-            content_filter=PruningContentFilter(),
-            options={
-                "body_width": 0,
-                "ignore_images": True,
-                "ignore_links": False,
-            },
-        ),
-    )
+    import httpx
+    import yaml
 
     semaphore = asyncio.Semaphore(max_concurrency)
     items: List[CrawlItem] = []
     failures: List[tuple[str, str]] = []
 
-    async with AsyncWebCrawler(config=browser_config) as crawler:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         async def fetch(url: str):
             async with semaphore:
                 try:
@@ -68,19 +38,27 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
                         if pdf_item is not None:
                             items.append(pdf_item)
                             return
-
-                    result = await crawler.arun(url=url, config=run_config)
-                    if getattr(result, "success", True) is False:
-                        failures.append((url, "crawl4ai returned success=False"))
+                        # If pdf extraction yields nothing, let's treat it as failure
+                        failures.append((url, "Failed to extract text from PDF"))
                         return
-                    item = _normalize_result(url, result)
+
+                    defuddle_url = f"https://defuddle.md/{url}"
+                    response = await client.get(defuddle_url)
+                    response.raise_for_status()
+
+                    item = _parse_defuddle_response(url, response.text, yaml)
                     if not item.text.strip():
                         # Fallback for binary sources or parser misses.
                         pdf_item = _crawl_pdf(url)
                         if pdf_item is not None:
                             items.append(pdf_item)
                             return
+                        failures.append((url, "Empty response from defuddle and pdf fallback failed"))
+                        return
+
                     items.append(item)
+                except httpx.HTTPStatusError as exc:
+                    failures.append((url, f"HTTP {exc.response.status_code} from defuddle"))
                 except Exception as exc:
                     failures.append((url, str(exc)))
 
@@ -89,38 +67,25 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
     return items, failures
 
 
-def _normalize_result(url: str, result) -> CrawlItem:
-    metadata = getattr(result, "metadata", None) or {}
-    title = getattr(result, "title", None) or metadata.get("title")
+def _parse_defuddle_response(url: str, text: str, yaml_module) -> CrawlItem:
+    text = text.strip()
+    title = None
+    metadata = {}
+    
+    # Parse YAML frontmatter if present
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            try:
+                frontmatter = yaml_module.safe_load(parts[1])
+                if isinstance(frontmatter, dict):
+                    metadata = frontmatter
+                    title = metadata.get("title")
+            except Exception:
+                pass
+            text = parts[2].strip()
 
-    text = _select_markdown_text(result)
-
-    if "<html" in text.lower():
-        text = _html_to_text(text)
-
-    return CrawlItem(url=url, text=text.strip(), metadata=metadata, title=title, origin_url=url)
-
-
-def _select_markdown_text(result) -> str:
-    markdown = getattr(result, "markdown", None)
-    if markdown:
-        for attr in ("fit_markdown", "markdown_with_citations", "raw_markdown"):
-            value = getattr(markdown, attr, None)
-            if value:
-                return value
-        if isinstance(markdown, str):
-            return markdown
-
-    return (
-        getattr(result, "text", None)
-        or getattr(result, "cleaned_html", None)
-        or ""
-    )
-
-
-def _html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    return " ".join(soup.get_text(" ").split())
+    return CrawlItem(url=url, text=text, metadata=metadata, title=title, origin_url=url)
 
 
 def _looks_like_pdf_url(url: str) -> bool:
