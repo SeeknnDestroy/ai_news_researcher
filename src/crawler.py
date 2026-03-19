@@ -41,8 +41,10 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
                         # If pdf extraction yields nothing, let's treat it as failure
                         failures.append((url, "Failed to extract text from PDF"))
                         return
-
-                    defuddle_url = f"https://defuddle.md/{url}"
+                    from urllib.parse import quote
+                    
+                    encoded_url = quote(url, safe='')
+                    defuddle_url = f"https://defuddle.md/{encoded_url}"
                     response = await client.get(defuddle_url)
                     response.raise_for_status()
 
