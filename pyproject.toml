@@ -10,7 +10,7 @@ dependencies = [
     "dateparser",
     "beautifulsoup4",
     "python-dotenv",
-    "pypdf",
+    "liteparse",
     "httpx",
     "tenacity",
     "tiktoken",

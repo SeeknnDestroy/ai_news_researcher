@@ -12,6 +12,7 @@ Features advanced capabilities including:
 
 - **Python 3.10+** (Recommend **Python 3.13**)
 - **uv** (or `pip`) for dependency management
+- **Node.js** with LiteParse installed if you want to crawl PDF sources
 - An active API key for **xAI** (or compatible LLM endpoints)
 
 ## Installation
@@ -38,6 +39,16 @@ Features advanced capabilities including:
    source .venv/bin/activate
    pip install httpx tenacity tiktoken pydantic-settings typer pytest-asyncio
    ```
+
+3. **Enable PDF crawling (required only for PDF sources):**
+   PDF parsing uses the `liteparse` Python package together with the LiteParse Node CLI runtime.
+
+   Install the CLI globally:
+   ```bash
+   npm install -g @llamaindex/liteparse
+   ```
+
+   Non-PDF crawling works without this extra step. If a PDF URL is encountered without LiteParse installed, that URL is reported as a crawl failure and the rest of the run continues.
 
 ## Configuration
 
@@ -115,6 +126,11 @@ Notes:
 ### Artifacts and Output
 - **Reports:** The final summarized markdown document will be written to `reports/YYYY-MM/`.
 - **Artifacts:** Debug logs, drafts, crawler text snapshots, and newsletter splits will be persisted in `artifacts/run_<timestamp>/`.
+
+### PDF Sources
+- PDF crawling is handled by LiteParse via its Python wrapper with OCR enabled by default.
+- PDF support depends on the LiteParse Node CLI being available on your machine.
+- Missing LiteParse runtime only affects PDF URLs; HTML/article URLs still process normally.
 
 ## Development & Testing
 
