@@ -62,12 +62,14 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
 
                     item = _parse_defuddle_response(url, response.text, yaml)
                     if not item.text.strip():
-                        # Fallback for binary sources or parser misses.
-                        pdf_item, failure_reason = _crawl_pdf(url)
-                        if pdf_item is not None:
-                            items.append(pdf_item)
+                        if _looks_like_pdf_url(url):
+                            pdf_item, failure_reason = _crawl_pdf(url)
+                            if pdf_item is not None:
+                                items.append(pdf_item)
+                                return
+                            failures.append((url, failure_reason or "Empty response from defuddle and pdf fallback failed"))
                             return
-                        failures.append((url, failure_reason or "Empty response from defuddle and pdf fallback failed"))
+                        failures.append((url, "Empty response from defuddle"))
                         return
 
                     items.append(item)
