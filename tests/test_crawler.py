@@ -28,3 +28,159 @@ def test_extract_pdf_text_returns_empty_on_request_error(monkeypatch):
     monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
 
     assert _extract_pdf_text("https://example.com/test.pdf") == ""
+
+
+def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monkeypatch):
+    pdf_bytes = b"%PDF-1.4 fake"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers, follow_redirects):
+            return SimpleNamespace(content=pdf_bytes, raise_for_status=lambda: None)
+
+    class FakeCLINotFoundError(Exception):
+        pass
+
+    class FakeLiteParse:
+        def parse(self, file_path, ocr_enabled=True):
+            raise FakeCLINotFoundError("cli missing")
+
+    fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=FakeCLINotFoundError)
+
+    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
+    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+
+    items, failures = crawl_urls(["https://example.com/report.pdf"])
+
+    assert items == []
+    assert failures == [
+        (
+            "https://example.com/report.pdf",
+            "LiteParse is required for PDF parsing; install Node.js and run: npm install -g @llamaindex/liteparse",
+        )
+    ]
+
+
+def test_empty_defuddle_response_uses_pdf_failure_reason(monkeypatch):
+    pdf_bytes = b"%PDF-1.4 fake"
+
+    class FakeSyncClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers, follow_redirects):
+            return SimpleNamespace(content=pdf_bytes, raise_for_status=lambda: None)
+
+    class FakeAsyncResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, timeout, follow_redirects):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return FakeAsyncResponse("")
+
+    class FakeCLINotFoundError(Exception):
+        pass
+
+    class FakeLiteParse:
+        def parse(self, file_path, ocr_enabled=True):
+            raise FakeCLINotFoundError("cli missing")
+
+    fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=FakeCLINotFoundError)
+
+    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeSyncClient())
+    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert items == []
+    assert failures == [
+        (
+            "https://example.com/report",
+            "LiteParse is required for PDF parsing; install Node.js and run: npm install -g @llamaindex/liteparse",
+        )
+    ]
+
+
+def test_crawl_pdf_url_uses_liteparse_text(monkeypatch):
+    pdf_bytes = b"%PDF-1.4 fake"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers, follow_redirects):
+            return SimpleNamespace(content=pdf_bytes, raise_for_status=lambda: None)
+
+    class FakeLiteParse:
+        def parse(self, file_path, ocr_enabled=True):
+            assert ocr_enabled is True
+            return SimpleNamespace(text="First page\n\nSecond page")
+
+    fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=RuntimeError)
+
+    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
+    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+
+    items, failures = crawl_urls(["https://example.com/report.pdf"])
+
+    assert failures == []
+    assert len(items) == 1
+    assert items[0].text == "First page\n\nSecond page"
+    assert items[0].metadata == {"content_type": "application/pdf"}
+    assert items[0].title == "report"
+
+
+def test_crawl_pdf_url_reports_stable_liteparse_failure(monkeypatch):
+    pdf_bytes = b"%PDF-1.4 fake"
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers, follow_redirects):
+            return SimpleNamespace(content=pdf_bytes, raise_for_status=lambda: None)
+
+    class FakeParseError(Exception):
+        pass
+
+    class FakeLiteParse:
+        def parse(self, file_path, ocr_enabled=True):
+            raise FakeParseError("unexpected stderr")
+
+    fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=RuntimeError)
+
+    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
+    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+
+    items, failures = crawl_urls(["https://example.com/report.pdf"])
+
+    assert items == []
+    assert failures == [("https://example.com/report.pdf", "LiteParse failed to parse PDF")]
