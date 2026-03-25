@@ -149,3 +149,11 @@ The live crawl integration test now skips automatically unless a valid `CRAWL_TE
 - Canonical content-processing tasks live in `src/application/content_tasks.py`.
 - Canonical report-generation tasks live in `src/application/report_tasks.py`.
 - `src/application/ai_tasks.py`, `src/summarize.py`, `src/newsletter.py`, and `src/agents/*` remain as compatibility shims during the migration cycle and should not be used for new internal code.
+
+### Current Workflow
+
+Prompt sources and call sites:
+- Prompt definitions live in `src/templates/prompts.py`.
+- Newsletter split and article summary prompts are called from `src/application/content_tasks.py`.
+- Draft generation, judge evaluation, and final theme writing prompts are called from `src/application/report_tasks.py`.
+- Prompt transport to the OpenAI Responses API lives in `src/llm.py`, where system prompts are sent as `instructions` and user prompts as `input`.

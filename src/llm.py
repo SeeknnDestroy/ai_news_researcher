@@ -269,6 +269,9 @@ async def complete_async(
 
         data = response.json()
         config.usage_collector.record_usage(task_name, _extract_usage(data))
+        incomplete_reason = _response_incomplete_reason(data)
+        if incomplete_reason:
+            raise LLMError(f"OpenAI response incomplete: {incomplete_reason}")
         return _extract_output_text(data)
 
     raise LLMError("OpenAI request retry loop exhausted unexpectedly.")
@@ -291,11 +294,11 @@ def _build_request(
         raise LLMError("Missing OPENAI_API_KEY environment variable.")
 
     text_format = _text_format(task_name, schema)
+    estimated_output_tokens = _estimated_output_tokens_for_task(config, task_name)
     payload: dict[str, Any] = {
         "model": config.model,
         "instructions": system,
         "input": user,
-        "max_output_tokens": config.max_output_tokens,
         "store": config.store,
         "text": {
             "verbosity": config.verbosity,
@@ -317,8 +320,16 @@ def _build_request(
     }
 
     estimated_input_tokens = _estimate_request_tokens(system, user, text_format, config.model)
-    estimated_tokens = max(estimated_input_tokens, config.max_output_tokens)
+    estimated_tokens = max(estimated_input_tokens, estimated_output_tokens)
     return f"{config.base_url}/responses", headers, payload, estimated_tokens
+
+
+def _estimated_output_tokens_for_task(config: OpenAIConfig, task_name: str) -> int:
+    # We do not send client-side output caps to the Responses API, but the rate
+    # limiter still needs a reasonable output estimate for token budgeting.
+    if task_name == "draft_outline":
+        return max(config.max_output_tokens, 12000)
+    return config.max_output_tokens
 
 
 def _text_format(task_name: str, schema: type[BaseModel] | None) -> dict[str, Any]:
@@ -407,6 +418,17 @@ def _extract_usage(data: dict[str, Any]) -> dict[str, int]:
         "reasoning_tokens": int(output_details.get("reasoning_tokens") or 0),
         "total_tokens": int(usage.get("total_tokens") or 0),
     }
+
+
+def _response_incomplete_reason(data: dict[str, Any]) -> str | None:
+    if data.get("status") != "incomplete":
+        return None
+    details = data.get("incomplete_details") or {}
+    if isinstance(details, dict):
+        reason = details.get("reason") or details.get("type")
+        if reason:
+            return str(reason)
+    return "unknown_reason"
 
 
 def _parse_json_response(raw: str) -> dict[str, Any]:
