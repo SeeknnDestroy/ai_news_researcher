@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import random
@@ -324,12 +325,38 @@ def _text_format(task_name: str, schema: type[BaseModel] | None) -> dict[str, An
     if schema is None:
         return {"type": "text"}
 
+    closed_schema = _close_open_object_schemas(schema.model_json_schema())
     return {
         "type": "json_schema",
         "name": task_name,
-        "schema": schema.model_json_schema(),
+        "schema": closed_schema,
         "strict": True,
     }
+
+
+def _close_open_object_schemas(schema: dict[str, Any]) -> dict[str, Any]:
+    normalized_schema = copy.deepcopy(schema)
+    _close_object_nodes(normalized_schema)
+    return normalized_schema
+
+
+def _close_object_nodes(node: Any) -> None:
+    if isinstance(node, dict):
+        node_type = node.get("type")
+        if node_type == "object" and "additionalProperties" not in node:
+            node["additionalProperties"] = False
+        if node_type == "object":
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["required"] = list(properties.keys())
+
+        for value in node.values():
+            _close_object_nodes(value)
+        return
+
+    if isinstance(node, list):
+        for item in node:
+            _close_object_nodes(item)
 
 
 def _supports_temperature(config: OpenAIConfig) -> bool:

@@ -349,7 +349,7 @@ async def test_pipeline_runner_exits_when_no_valid_summaries(tmp_path: Path):
         event_sink=NullEventSink(),
     )
 
-    with pytest.raises(SystemExit, match="No valid articles after crawl/summarization."):
+    with pytest.raises(SystemExit, match="No valid articles after crawl/summarization. First errors: missing summary fields"):
         await runner.run(PipelineRequest(target_date=target_date, base_dir=tmp_path, max_concurrency=1))
 
 

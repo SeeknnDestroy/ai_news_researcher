@@ -128,7 +128,11 @@ class PipelineRunner:
         metadata.fallbacks.extend(self._dedupe(summary_computation.fallbacks))
 
         if not summary_stage_result.summaries:
-            raise SystemExit("No valid articles after crawl/summarization.")
+            failure_message = self._build_no_valid_articles_message(
+                summary_stage_result=summary_stage_result,
+                validation_failures=summary_computation.validation_failures,
+            )
+            raise SystemExit(failure_message)
 
         self._emit(
             "FILTER",
@@ -411,6 +415,38 @@ class PipelineRunner:
             seen.add(value)
             result.append(value)
         return result
+
+    def _build_no_valid_articles_message(
+        self,
+        *,
+        summary_stage_result: SummaryStageResult,
+        validation_failures: list[str],
+    ) -> str:
+        base_message = "No valid articles after crawl/summarization."
+        reason_candidates: list[str] = []
+
+        for failure in validation_failures:
+            normalized_reason = self._strip_failure_prefix(failure)
+            if normalized_reason:
+                reason_candidates.append(normalized_reason)
+
+        for excluded_item in summary_stage_result.excluded:
+            if excluded_item.reason:
+                reason_candidates.append(excluded_item.reason)
+
+        unique_reasons = self._dedupe(reason_candidates)
+        if not unique_reasons:
+            return base_message
+
+        preview_reasons = unique_reasons[:3]
+        preview_text = "; ".join(preview_reasons)
+        return f"{base_message} First errors: {preview_text}"
+
+    def _strip_failure_prefix(self, failure: str) -> str:
+        if ": " not in failure:
+            return failure
+        _, reason = failure.split(": ", 1)
+        return reason
 
 
 async def run_report_pipeline(
