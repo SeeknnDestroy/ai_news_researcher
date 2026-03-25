@@ -1,0 +1,9 @@
+{
+  "name": "ai-news-researcher-local-crawl",
+  "private": true,
+  "dependencies": {
+    "defuddle": "0.14.0",
+    "jsdom": "29.0.1",
+    "playwright": "1.58.2"
+  }
+}

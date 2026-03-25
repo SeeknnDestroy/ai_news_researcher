@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import importlib
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -24,10 +25,8 @@ LITEPARSE_INSTALL_HINT = (
     "npm install -g @llamaindex/liteparse"
 )
 LITEPARSE_FAILURE_REASON = "LiteParse failed to parse PDF"
-DEFUDDLE_HOSTED_BASE_URL = "https://defuddle.md"
 DEFUDDLE_CLI_TIMEOUT_S = 90
-DEFAULT_RETRY_AFTER_S = 1.0
-MAX_HOSTED_DEFUDDLE_ATTEMPTS = 3
+BROWSER_FALLBACK_TIMEOUT_S = 90
 
 
 @dataclass(slots=True)
@@ -42,53 +41,41 @@ def crawl_urls(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlIte
 
 
 async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
-    import httpx
-    import yaml
-
     semaphore = asyncio.Semaphore(max_concurrency)
     items: List[CrawlItem] = []
     failures: List[tuple[str, str]] = []
 
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        async def fetch(url: str):
-            async with semaphore:
-                try:
-                    if _looks_like_pdf_url(url):
-                        pdf_item, failure_reason = _crawl_pdf(url)
-                        if pdf_item is not None:
-                            items.append(pdf_item)
-                            return
-                        failures.append((url, failure_reason or "Failed to extract text from PDF"))
-                        return
-                    item, local_error = await _crawl_html_with_local_defuddle(url)
-                    if item is not None:
-                        items.append(item)
-                        return
+    async def fetch(url: str):
+        async with semaphore:
+            if _looks_like_pdf_url(url):
+                pdf_item, failure_reason = _crawl_pdf(url)
+                if pdf_item is not None:
+                    items.append(pdf_item)
+                    return
+                failures.append((url, failure_reason or "Failed to extract text from PDF"))
+                return
 
-                    response_text = await _fetch_hosted_defuddle_text(client, url)
-                    item = _parse_defuddle_response(url, response_text, yaml)
-                    if not item.text.strip():
-                        if _looks_like_pdf_url(url):
-                            pdf_item, failure_reason = _crawl_pdf(url)
-                            if pdf_item is not None:
-                                items.append(pdf_item)
-                                return
-                            failures.append((url, failure_reason or "Empty response from defuddle and pdf fallback failed"))
-                            return
-                        failures.append((url, "Empty response from defuddle"))
-                        return
+            item, local_error = await _crawl_html_with_local_defuddle(url)
+            if item is not None:
+                items.append(item)
+                return
 
-                    items.append(item)
-                except httpx.HTTPStatusError as exc:
-                    hosted_reason = f"HTTP {exc.response.status_code} from defuddle"
-                    local_reason = locals().get("local_error")
-                    failures.append((url, _combine_defuddle_failures(local_reason, hosted_reason)))
-                except Exception as exc:
-                    hosted_reason = str(exc)
-                    local_reason = locals().get("local_error")
-                    failures.append((url, _combine_defuddle_failures(local_reason, hosted_reason)))
+            if not local_error:
+                failures.append((url, "Empty response from defuddle"))
+                return
 
-        await asyncio.gather(*(fetch(url) for url in urls))
+            if not _should_attempt_browser_fallback(local_error):
+                failures.append((url, local_error))
+                return
+
+            browser_item, browser_error = await _crawl_html_with_browser_defuddle(url)
+            if browser_item is not None:
+                items.append(browser_item)
+                return
+
+            failures.append((url, _combine_local_failures(local_error, browser_error)))
+
+    await asyncio.gather(*(fetch(url) for url in urls))
 
     return items, failures
 
@@ -119,6 +106,10 @@ async def _crawl_html_with_local_defuddle(url: str) -> tuple[CrawlItem | None, s
         item = await asyncio.to_thread(_run_local_defuddle_cli, url)
     except Exception as exc:
         return None, str(exc)
+    if not item.text.strip():
+        return None, "Empty response from defuddle"
+    if _looks_like_block_page(item):
+        return None, "Blocked by anti-bot challenge"
     return item, None
 
 
@@ -144,7 +135,7 @@ def _defuddle_command() -> list[str]:
     binary_path = shutil.which("defuddle")
     if binary_path:
         return [binary_path]
-    return ["npx", "--yes", "defuddle"]
+    return ["./node_modules/.bin/defuddle"] if Path("node_modules/.bin/defuddle").exists() else ["npx", "--yes", "defuddle"]
 
 
 def _defuddle_process_error(process: subprocess.CompletedProcess[str]) -> str:
@@ -170,47 +161,81 @@ def _parse_defuddle_json_payload(url: str, payload: dict[str, object]) -> CrawlI
     )
 
 
-async def _fetch_hosted_defuddle_text(client: httpx.AsyncClient, url: str) -> str:
-    from urllib.parse import quote
-
-    encoded_url = quote(url, safe="")
-    defuddle_url = f"{DEFUDDLE_HOSTED_BASE_URL}/{encoded_url}"
-
-    for attempt_index in range(MAX_HOSTED_DEFUDDLE_ATTEMPTS):
-        response = await client.get(defuddle_url)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            is_retryable = exc.response.status_code == 429
-            has_attempts_remaining = attempt_index < (MAX_HOSTED_DEFUDDLE_ATTEMPTS - 1)
-            if not is_retryable or not has_attempts_remaining:
-                raise
-            delay_seconds = _retry_after_seconds(exc.response.headers.get("retry-after"), attempt_index)
-            await asyncio.sleep(delay_seconds)
-            continue
-        return response.text
-
-    raise RuntimeError("Hosted defuddle retry loop exhausted unexpectedly")
-
-
-def _retry_after_seconds(header_value: str | None, attempt_index: int) -> float:
-    if not header_value:
-        backoff_seconds = DEFAULT_RETRY_AFTER_S * (2**attempt_index)
-        return backoff_seconds
-
+async def _crawl_html_with_browser_defuddle(url: str) -> tuple[CrawlItem | None, str | None]:
     try:
-        parsed_seconds = float(header_value)
-    except ValueError:
-        backoff_seconds = DEFAULT_RETRY_AFTER_S * (2**attempt_index)
-        return backoff_seconds
+        item = await asyncio.to_thread(_run_browser_defuddle_helper, url)
+    except Exception as exc:
+        return None, str(exc)
+    if not item.text.strip():
+        return None, "Browser fallback returned empty content"
+    if _looks_like_block_page(item):
+        return None, "Blocked by anti-bot challenge"
+    return item, None
 
-    return max(0.0, parsed_seconds)
+
+def _run_browser_defuddle_helper(url: str) -> CrawlItem:
+    helper_path = Path(__file__).resolve().parent / "browser_fetch_and_parse.mjs"
+    process = subprocess.run(
+        ["node", str(helper_path), url],
+        capture_output=True,
+        text=True,
+        timeout=BROWSER_FALLBACK_TIMEOUT_S,
+    )
+
+    if process.returncode != 0:
+        failure_message = _defuddle_process_error(process)
+        raise RuntimeError(failure_message)
+
+    payload = json.loads(process.stdout)
+    metadata = payload.get("metadata")
+    final_url = str(payload.get("final_url") or url)
+    title = str(payload.get("title") or "").strip() or None
+    content = str(payload.get("content") or "").strip()
+    return CrawlItem(
+        url=final_url,
+        text=content,
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        title=title,
+        origin_url=url,
+    )
 
 
-def _combine_defuddle_failures(local_reason: str | None, hosted_reason: str) -> str:
-    if not local_reason:
-        return hosted_reason
-    return f"local defuddle failed ({local_reason}); hosted defuddle failed ({hosted_reason})"
+def _should_attempt_browser_fallback(local_error: str) -> bool:
+    normalized_error = local_error.lower()
+    fetch_markers = (
+        "failed to fetch",
+        "too many requests",
+        "forbidden",
+        "timed out",
+        "timeout",
+        "empty response",
+        "no content could be extracted",
+        "net::",
+        "network",
+        "dns",
+        "anti-bot challenge",
+    )
+    return any(marker in normalized_error for marker in fetch_markers)
+
+
+def _combine_local_failures(local_reason: str, browser_reason: str | None) -> str:
+    if not browser_reason:
+        return local_reason
+    return f"local defuddle failed ({local_reason}); browser fallback failed ({browser_reason})"
+
+
+def _looks_like_block_page(item: CrawlItem) -> bool:
+    title_text = (item.title or "").strip().lower()
+    content_sample = item.text[:400].strip().lower()
+    challenge_markers = (
+        "just a moment",
+        "enable javascript and cookies to continue",
+        "verification successful. waiting for",
+        "cf challenge",
+        "cloudflare",
+    )
+    combined_text = f"{title_text}\n{content_sample}"
+    return any(marker in combined_text for marker in challenge_markers)
 
 
 def _looks_like_pdf_url(url: str) -> bool:

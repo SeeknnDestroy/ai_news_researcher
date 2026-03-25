@@ -68,65 +68,47 @@ def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monke
 
 
 def test_empty_defuddle_response_for_non_pdf_url_returns_defuddle_failure(monkeypatch):
-    class FakeAsyncResponse:
-        def __init__(self, text):
-            self.text = text
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = json.dumps({"content": "", "title": ""})
+            self.stderr = ""
 
-        def raise_for_status(self):
-            return None
-
-    class FakeAsyncClient:
-        def __init__(self, timeout, follow_redirects):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            return FakeAsyncResponse("")
-
-    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
 
     items, failures = crawl_urls(["https://example.com/report"])
 
     assert items == []
-    assert failures == [("https://example.com/report", "Empty response from defuddle")]
+    assert failures == [
+        (
+            "https://example.com/report",
+            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content)",
+        )
+    ]
 
 
 def test_empty_defuddle_response_for_non_pdf_url_skips_pdf_fallback(monkeypatch):
-    class FakeAsyncResponse:
-        def __init__(self, text):
-            self.text = text
-
-        def raise_for_status(self):
-            return None
-
-    class FakeAsyncClient:
-        def __init__(self, timeout, follow_redirects):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            return FakeAsyncResponse("")
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = json.dumps({"content": "", "title": ""})
+            self.stderr = ""
 
     def fail_if_called(url):
         raise AssertionError("PDF fallback should not run for non-PDF URLs")
 
-    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
     monkeypatch.setattr("src.crawler._crawl_pdf", fail_if_called)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
     assert items == []
-    assert failures == [("https://example.com/report", "Empty response from defuddle")]
+    assert failures == [
+        (
+            "https://example.com/report",
+            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content)",
+        )
+    ]
 
 
 def test_crawl_pdf_url_uses_liteparse_text(monkeypatch):
@@ -205,20 +187,6 @@ def test_crawl_html_uses_local_defuddle_cli_before_hosted_api(monkeypatch):
             )
             self.stderr = ""
 
-    class FakeAsyncClient:
-        def __init__(self, timeout, follow_redirects):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            raise AssertionError(f"hosted defuddle should not be called: {url}")
-
-    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
 
     items, failures = crawl_urls(["https://example.com/report"])
@@ -230,43 +198,110 @@ def test_crawl_html_uses_local_defuddle_cli_before_hosted_api(monkeypatch):
     assert items[0].text == "# Main Content\n\nRecovered locally."
 
 
-def test_crawl_html_falls_back_to_hosted_defuddle_when_local_cli_fails(monkeypatch):
-    class FakeCompletedProcess:
+def test_crawl_html_falls_back_to_local_browser_when_local_cli_hits_fetch_failure(monkeypatch):
+    class FakeCliProcess:
         def __init__(self):
             self.returncode = 1
             self.stdout = ""
             self.stderr = "Error: Failed to fetch: 403 Forbidden"
 
-    class FakeAsyncResponse:
-        def __init__(self, text):
-            self.text = text
-            self.status_code = 200
-            self.headers = {}
+    browser_calls: list[str] = []
 
-        def raise_for_status(self):
-            return None
+    async def fake_browser_fallback(url):
+        browser_calls.append(url)
+        return (
+            SimpleNamespace(
+                url=url,
+                text="Browser body",
+                metadata={"site": "Browser Site"},
+                title="Browser Title",
+                origin_url=url,
+            ),
+            None,
+        )
 
-    class FakeAsyncClient:
-        def __init__(self, timeout, follow_redirects):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            del url
-            return FakeAsyncResponse("---\ntitle: Hosted Title\nsite: Hosted Site\n---\n\nHosted body")
-
-    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
     assert failures == []
     assert len(items) == 1
-    assert items[0].title == "Hosted Title"
-    assert items[0].metadata["site"] == "Hosted Site"
-    assert items[0].text == "Hosted body"
+    assert items[0].title == "Browser Title"
+    assert items[0].metadata["site"] == "Browser Site"
+    assert items[0].text == "Browser body"
+    assert browser_calls == ["https://example.com/report"]
+
+
+def test_crawl_html_does_not_use_browser_fallback_for_non_fetch_cli_failure(monkeypatch):
+    class FakeCliProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stdout = ""
+            self.stderr = "Error: invalid json output"
+
+    async def fail_if_called(url):
+        raise AssertionError(f"browser fallback should not run for non-fetch failure: {url}")
+
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fail_if_called)
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert items == []
+    assert failures == [("https://example.com/report", "invalid json output")]
+
+
+def test_crawl_html_reports_combined_local_failures_when_browser_fallback_also_fails(monkeypatch):
+    class FakeCliProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stdout = ""
+            self.stderr = "Error: Failed to fetch: 429 Too Many Requests"
+
+    async def fake_browser_fallback(url):
+        del url
+        return None, "Playwright browser fallback failed"
+
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert items == []
+    assert failures == [
+        (
+            "https://example.com/report",
+            "local defuddle failed (Failed to fetch: 429 Too Many Requests); browser fallback failed (Playwright browser fallback failed)",
+        )
+    ]
+
+
+def test_crawl_html_treats_anti_bot_challenge_as_failure(monkeypatch):
+    class FakeCliProcess:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = json.dumps(
+                {
+                    "content": "Verification successful. Waiting for openai.com to respond",
+                    "title": "Just a moment...",
+                }
+            )
+            self.stderr = ""
+
+    async def fake_browser_fallback(url):
+        del url
+        return None, "Blocked by anti-bot challenge"
+
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+
+    items, failures = crawl_urls(["https://openai.com/index/test"])
+
+    assert items == []
+    assert failures == [
+        (
+            "https://openai.com/index/test",
+            "local defuddle failed (Blocked by anti-bot challenge); browser fallback failed (Blocked by anti-bot challenge)",
+        )
+    ]
