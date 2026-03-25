@@ -20,7 +20,7 @@ def source_name_from_url(url: str) -> str:
     return base.replace("-", " ").title()
 
 
-def clamp_text_tokens(text: str, max_tokens: int, model_name: str = "gpt-4o") -> str:
+def clamp_text_tokens(text: str, max_tokens: int, model_name: str = "gpt-5.4-nano") -> str:
     """Safely truncates text to fit within a specific token count."""
     if not text:
         return ""

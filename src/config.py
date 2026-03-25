@@ -7,11 +7,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    xai_api_key: Optional[str] = None
-    xai_base_url: str = "https://api.x.ai/v1"
-    xai_model: str = "grok-4-1-fast-reasoning"
-    xai_temperature: float = 0.2
-    xai_timeout_s: int = 60
+    openai_api_key: Optional[str] = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-5.4-nano"
+    openai_temperature: float = 0.2
+    openai_timeout_s: int = 60
+    openai_reasoning_effort: str = "none"
+    openai_verbosity: str = "low"
+    openai_max_output_tokens: int = 2000
+    openai_rpm_limit: int = 500
+    openai_tpm_limit: int = 200_000
+    openai_tpd_limit: int = 2_000_000
 
     eval_revision_threshold: float = 75.0
     eval_groundedness_threshold: float = 70.0
