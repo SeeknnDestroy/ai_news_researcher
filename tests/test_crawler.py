@@ -74,7 +74,17 @@ def test_empty_defuddle_response_for_non_pdf_url_returns_defuddle_failure(monkey
             self.stdout = json.dumps({"content": "", "title": ""})
             self.stderr = ""
 
+    async def fake_browser_fallback(url):
+        del url
+        return None, "Browser fallback returned empty content"
+
+    async def fake_crawl4ai(url):
+        del url
+        return None, "crawl4ai returned empty content"
+
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
@@ -82,7 +92,7 @@ def test_empty_defuddle_response_for_non_pdf_url_returns_defuddle_failure(monkey
     assert failures == [
         (
             "https://example.com/report",
-            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content)",
+            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content); crawl4ai failed (crawl4ai returned empty content)",
         )
     ]
 
@@ -97,8 +107,18 @@ def test_empty_defuddle_response_for_non_pdf_url_skips_pdf_fallback(monkeypatch)
     def fail_if_called(url):
         raise AssertionError("PDF fallback should not run for non-PDF URLs")
 
+    async def fake_browser_fallback(url):
+        del url
+        return None, "Browser fallback returned empty content"
+
+    async def fake_crawl4ai(url):
+        del url
+        return None, "crawl4ai returned empty content"
+
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
     monkeypatch.setattr("src.crawler._crawl_pdf", fail_if_called)
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
@@ -106,7 +126,7 @@ def test_empty_defuddle_response_for_non_pdf_url_skips_pdf_fallback(monkeypatch)
     assert failures == [
         (
             "https://example.com/report",
-            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content)",
+            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content); crawl4ai failed (crawl4ai returned empty content)",
         )
     ]
 
@@ -243,8 +263,12 @@ def test_crawl_html_does_not_use_browser_fallback_for_non_fetch_cli_failure(monk
     async def fail_if_called(url):
         raise AssertionError(f"browser fallback should not run for non-fetch failure: {url}")
 
+    async def fail_crawl4ai_if_called(url):
+        raise AssertionError(f"crawl4ai fallback should not run for non-fetch failure: {url}")
+
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
     monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fail_if_called)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fail_crawl4ai_if_called)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
@@ -263,8 +287,13 @@ def test_crawl_html_reports_combined_local_failures_when_browser_fallback_also_f
         del url
         return None, "Playwright browser fallback failed"
 
+    async def fake_crawl4ai_fallback(url):
+        del url
+        return None, "crawl4ai fallback failed"
+
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
     monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
 
     items, failures = crawl_urls(["https://example.com/report"])
 
@@ -272,9 +301,45 @@ def test_crawl_html_reports_combined_local_failures_when_browser_fallback_also_f
     assert failures == [
         (
             "https://example.com/report",
-            "local defuddle failed (Failed to fetch: 429 Too Many Requests); browser fallback failed (Playwright browser fallback failed)",
+            "local defuddle failed (Failed to fetch: 429 Too Many Requests); browser fallback failed (Playwright browser fallback failed); crawl4ai failed (crawl4ai fallback failed)",
         )
     ]
+
+
+def test_crawl_html_falls_back_to_crawl4ai_when_browser_fallback_fails(monkeypatch):
+    class FakeCliProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stdout = ""
+            self.stderr = "Error: Failed to fetch: 403 Forbidden"
+
+    async def fake_browser_fallback(url):
+        del url
+        return None, "Blocked by anti-bot challenge"
+
+    async def fake_crawl4ai_fallback(url):
+        return (
+            SimpleNamespace(
+                url=url,
+                text="Crawl4AI body",
+                metadata={"site": "Crawl4AI Site"},
+                title="Crawl4AI Title",
+                origin_url=url,
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
+    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert failures == []
+    assert len(items) == 1
+    assert items[0].title == "Crawl4AI Title"
+    assert items[0].metadata["site"] == "Crawl4AI Site"
+    assert items[0].text == "Crawl4AI body"
 
 
 def test_crawl_html_treats_anti_bot_challenge_as_failure(monkeypatch):
@@ -293,8 +358,13 @@ def test_crawl_html_treats_anti_bot_challenge_as_failure(monkeypatch):
         del url
         return None, "Blocked by anti-bot challenge"
 
+    async def fake_crawl4ai_fallback(url):
+        del url
+        return None, "Blocked by anti-bot challenge"
+
     monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
     monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
+    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
 
     items, failures = crawl_urls(["https://openai.com/index/test"])
 
@@ -302,6 +372,6 @@ def test_crawl_html_treats_anti_bot_challenge_as_failure(monkeypatch):
     assert failures == [
         (
             "https://openai.com/index/test",
-            "local defuddle failed (Blocked by anti-bot challenge); browser fallback failed (Blocked by anti-bot challenge)",
+            "local defuddle failed (Blocked by anti-bot challenge); browser fallback failed (Blocked by anti-bot challenge); crawl4ai failed (Blocked by anti-bot challenge)",
         )
     ]

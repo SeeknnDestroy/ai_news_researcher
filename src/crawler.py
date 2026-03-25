@@ -73,7 +73,12 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
                 items.append(browser_item)
                 return
 
-            failures.append((url, _combine_local_failures(local_error, browser_error)))
+            crawl4ai_item, crawl4ai_error = await _crawl_html_with_crawl4ai(url)
+            if crawl4ai_item is not None:
+                items.append(crawl4ai_item)
+                return
+
+            failures.append((url, _combine_local_failures(local_error, browser_error, crawl4ai_error)))
 
     await asyncio.gather(*(fetch(url) for url in urls))
 
@@ -173,6 +178,54 @@ async def _crawl_html_with_browser_defuddle(url: str) -> tuple[CrawlItem | None,
     return item, None
 
 
+async def _crawl_html_with_crawl4ai(url: str) -> tuple[CrawlItem | None, str | None]:
+    try:
+        from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+    except Exception:
+        return None, "crawl4ai is not installed"
+
+    browser_config = BrowserConfig(
+        browser_type="chromium",
+        headless=True,
+        verbose=False,
+    )
+    run_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        word_count_threshold=10,
+    )
+
+    try:
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            result = await crawler.arun(url, config=run_config)
+    except Exception as exc:
+        return None, str(exc)
+
+    if not result.success:
+        error_message = str(getattr(result, "error_message", "") or "crawl4ai failed")
+        return None, error_message
+
+    markdown_value = getattr(result, "markdown", "") or ""
+    title_value = None
+    metadata_value = getattr(result, "metadata", None)
+    if isinstance(metadata_value, dict):
+        raw_title = metadata_value.get("title")
+        title_value = str(raw_title).strip() if raw_title else None
+
+    item = CrawlItem(
+        url=str(getattr(result, "url", "") or url),
+        text=str(markdown_value).strip(),
+        metadata=dict(metadata_value) if isinstance(metadata_value, dict) else {},
+        title=title_value,
+        origin_url=url,
+    )
+
+    if not item.text.strip():
+        return None, "crawl4ai returned empty content"
+    if _looks_like_block_page(item):
+        return None, "Blocked by anti-bot challenge"
+    return item, None
+
+
 def _run_browser_defuddle_helper(url: str) -> CrawlItem:
     helper_path = Path(__file__).resolve().parent / "browser_fetch_and_parse.mjs"
     process = subprocess.run(
@@ -218,10 +271,15 @@ def _should_attempt_browser_fallback(local_error: str) -> bool:
     return any(marker in normalized_error for marker in fetch_markers)
 
 
-def _combine_local_failures(local_reason: str, browser_reason: str | None) -> str:
-    if not browser_reason:
+def _combine_local_failures(local_reason: str, browser_reason: str | None, crawl4ai_reason: str | None) -> str:
+    if not browser_reason and not crawl4ai_reason:
         return local_reason
-    return f"local defuddle failed ({local_reason}); browser fallback failed ({browser_reason})"
+    message = f"local defuddle failed ({local_reason})"
+    if browser_reason:
+        message += f"; browser fallback failed ({browser_reason})"
+    if crawl4ai_reason:
+        message += f"; crawl4ai failed ({crawl4ai_reason})"
+    return message
 
 
 def _looks_like_block_page(item: CrawlItem) -> bool:

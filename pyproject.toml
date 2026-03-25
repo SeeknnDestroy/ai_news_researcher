@@ -9,6 +9,7 @@ dependencies = [
     "pydantic",
     "dateparser",
     "beautifulsoup4",
+    "crawl4ai",
     "python-dotenv",
     "liteparse",
     "httpx",
