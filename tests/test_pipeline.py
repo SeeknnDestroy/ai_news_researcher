@@ -34,6 +34,76 @@ class FakeLLMClient:
     def __init__(self, *, structured: dict[str, list], text: list[str] | None = None) -> None:
         self.structured = {key: list(value) for key, value in structured.items()}
         self.text = list(text or [])
+        self.usage_snapshot = {
+            "totals": {
+                "request_count": 4,
+                "input_tokens": 430,
+                "output_tokens": 170,
+                "cached_input_tokens": 80,
+                "reasoning_tokens": 12,
+                "total_tokens": 600,
+            },
+            "by_task": {
+                "article_summary": {
+                    "request_count": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 40,
+                    "cached_input_tokens": 20,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 160,
+                },
+                "draft_outline": {
+                    "request_count": 1,
+                    "input_tokens": 90,
+                    "output_tokens": 35,
+                    "cached_input_tokens": 10,
+                    "reasoning_tokens": 4,
+                    "total_tokens": 125,
+                },
+                "judge_evaluation": {
+                    "request_count": 1,
+                    "input_tokens": 70,
+                    "output_tokens": 25,
+                    "cached_input_tokens": 15,
+                    "reasoning_tokens": 3,
+                    "total_tokens": 95,
+                },
+                "final_report_theme": {
+                    "request_count": 1,
+                    "input_tokens": 150,
+                    "output_tokens": 70,
+                    "cached_input_tokens": 35,
+                    "reasoning_tokens": 5,
+                    "total_tokens": 220,
+                },
+            },
+            "by_role": {
+                "researcher": {
+                    "request_count": 1,
+                    "input_tokens": 120,
+                    "output_tokens": 40,
+                    "cached_input_tokens": 20,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 160,
+                },
+                "writer": {
+                    "request_count": 2,
+                    "input_tokens": 240,
+                    "output_tokens": 105,
+                    "cached_input_tokens": 45,
+                    "reasoning_tokens": 9,
+                    "total_tokens": 345,
+                },
+                "judge": {
+                    "request_count": 1,
+                    "input_tokens": 70,
+                    "output_tokens": 25,
+                    "cached_input_tokens": 15,
+                    "reasoning_tokens": 3,
+                    "total_tokens": 95,
+                },
+            },
+        }
 
     async def generate_structured(self, *, system: str, user: str, schema, task_name: str):
         del system, user
@@ -54,6 +124,9 @@ class FakeLLMClient:
         if isinstance(value, Exception):
             raise value
         return value
+
+    def get_usage_summary(self):
+        return self.usage_snapshot
 
 
 def _write_input(base_dir: Path, target_date: date, urls: list[str], evaluation: bool = True) -> Path:
@@ -144,6 +217,9 @@ async def test_pipeline_runner_persists_successful_run(tmp_path: Path):
     artifact_content = result.persistence.artifact_path.read_text(encoding="utf-8")
     assert '"stage_timings"' in artifact_content
     assert '"report_title": "Weekly AI Report"' in artifact_content
+    assert '"llm_usage"' in artifact_content
+    assert '"article_summary"' in artifact_content
+    assert '"judge"' in artifact_content
 
 
 @pytest.mark.asyncio
@@ -503,3 +579,43 @@ async def test_pipeline_runner_produces_debug_dir(tmp_path: Path):
 
     assert result.persistence.debug_dir is not None
     assert result.persistence.debug_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_runner_exposes_llm_usage_metrics(tmp_path: Path):
+    target_date = date(2026, 3, 13)
+    url = "https://example.com/usage"
+    _write_input(tmp_path, target_date, [url])
+
+    llm_client = FakeLLMClient(
+        structured={
+            "article_summary": [_summary("Usage Story")],
+            "draft_outline": [_outline([url])],
+            "judge_evaluation": [
+                {
+                    "critique": "Looks good.",
+                    "specific_fixes_required": [],
+                    "passes_criteria": True,
+                }
+            ],
+        },
+        text=["## 1. Agentic Delivery\n\n### <u>**Execution speed improves**</u>\n"],
+    )
+    crawl_service = FakeCrawlService(
+        CrawlStageResult(
+            items=[CrawlItem(url=url, text="Article text", metadata={}, title="Usage story", origin_url=url)],
+            failures=[],
+        )
+    )
+
+    runner = PipelineRunner(
+        llm_client=llm_client,
+        crawl_service=crawl_service,
+        store=FileSystemPipelineStore(),
+        event_sink=NullEventSink(),
+    )
+    result = await runner.run(PipelineRequest(target_date=target_date, base_dir=tmp_path, max_concurrency=1))
+
+    assert result.metadata.llm_usage["totals"]["request_count"] == 4
+    assert result.metadata.llm_usage["by_task"]["article_summary"]["input_tokens"] == 120
+    assert result.metadata.llm_usage["by_role"]["writer"]["output_tokens"] == 105
