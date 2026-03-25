@@ -192,6 +192,7 @@ class FileSystemPipelineStore:
                 "validation_failures": metadata.validation_failures,
                 "retries": metadata.retries,
                 "fallbacks": metadata.fallbacks,
+                "llm_usage": metadata.llm_usage,
             },
         }
 

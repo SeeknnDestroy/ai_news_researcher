@@ -145,6 +145,7 @@ class PipelineRunner:
             ),
         )
         metadata.retries["draft_revision"] = draft_result.revision_count
+        metadata.llm_usage = self._collect_llm_usage()
 
         persistence = self._time_stage(
             metadata,
@@ -378,6 +379,16 @@ class PipelineRunner:
 
     def _emit(self, stage: str, message: str = "") -> None:
         self.event_sink.emit(PipelineEvent(stage=stage, message=message))
+
+    def _collect_llm_usage(self) -> dict[str, object]:
+        get_usage_summary = getattr(self.llm_client, "get_usage_summary", None)
+        if not callable(get_usage_summary):
+            return {}
+
+        usage_summary = get_usage_summary()
+        if isinstance(usage_summary, dict):
+            return usage_summary
+        return {}
 
     def _time_stage(self, metadata: PipelineRunMetadata, stage_name: str, func):
         started = perf_counter()

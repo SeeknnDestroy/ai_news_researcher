@@ -62,9 +62,51 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
             ),
             event_sink=CompositeEventSink(*sinks),
         )
+        _print_usage_summary(result.metadata.llm_usage)
         return result
     except (InputError, CrawlError) as exc:
         raise SystemExit(str(exc))
+
+
+def _print_usage_summary(usage_summary: dict[str, object]) -> None:
+    totals = usage_summary.get("totals")
+    if not isinstance(totals, dict):
+        return
+
+    print(
+        "LLM usage | "
+        f"requests={totals.get('request_count', 0)} "
+        f"input={totals.get('input_tokens', 0)} "
+        f"output={totals.get('output_tokens', 0)} "
+        f"cached={totals.get('cached_input_tokens', 0)} "
+        f"reasoning={totals.get('reasoning_tokens', 0)} "
+        f"total={totals.get('total_tokens', 0)}",
+        flush=True,
+    )
+
+    _print_usage_group("LLM usage by role", usage_summary.get("by_role"))
+    _print_usage_group("LLM usage by task", usage_summary.get("by_task"))
+
+
+def _print_usage_group(title: str, usage_group: object) -> None:
+    if not isinstance(usage_group, dict) or not usage_group:
+        return
+
+    print(title, flush=True)
+    for key in sorted(usage_group):
+        bucket = usage_group.get(key)
+        if not isinstance(bucket, dict):
+            continue
+        print(
+            f"  {key}: "
+            f"requests={bucket.get('request_count', 0)} "
+            f"input={bucket.get('input_tokens', 0)} "
+            f"output={bucket.get('output_tokens', 0)} "
+            f"cached={bucket.get('cached_input_tokens', 0)} "
+            f"reasoning={bucket.get('reasoning_tokens', 0)} "
+            f"total={bucket.get('total_tokens', 0)}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

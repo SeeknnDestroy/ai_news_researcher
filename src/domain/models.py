@@ -113,6 +113,7 @@ class PipelineRunMetadata:
     validation_failures: List[str] = field(default_factory=list)
     retries: Dict[str, int] = field(default_factory=dict)
     fallbacks: List[str] = field(default_factory=list)
+    llm_usage: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
