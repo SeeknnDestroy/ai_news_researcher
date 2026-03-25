@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -189,3 +190,83 @@ def test_crawl_pdf_url_reports_stable_liteparse_failure(monkeypatch):
 
     assert items == []
     assert failures == [("https://example.com/report.pdf", "LiteParse failed to parse PDF")]
+
+
+def test_crawl_html_uses_local_defuddle_cli_before_hosted_api(monkeypatch):
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = json.dumps(
+                {
+                    "content": "# Main Content\n\nRecovered locally.",
+                    "title": "Local Title",
+                    "site": "Example Site",
+                }
+            )
+            self.stderr = ""
+
+    class FakeAsyncClient:
+        def __init__(self, timeout, follow_redirects):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            raise AssertionError(f"hosted defuddle should not be called: {url}")
+
+    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert failures == []
+    assert len(items) == 1
+    assert items[0].title == "Local Title"
+    assert items[0].metadata["site"] == "Example Site"
+    assert items[0].text == "# Main Content\n\nRecovered locally."
+
+
+def test_crawl_html_falls_back_to_hosted_defuddle_when_local_cli_fails(monkeypatch):
+    class FakeCompletedProcess:
+        def __init__(self):
+            self.returncode = 1
+            self.stdout = ""
+            self.stderr = "Error: Failed to fetch: 403 Forbidden"
+
+    class FakeAsyncResponse:
+        def __init__(self, text):
+            self.text = text
+            self.status_code = 200
+            self.headers = {}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, timeout, follow_redirects):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            del url
+            return FakeAsyncResponse("---\ntitle: Hosted Title\nsite: Hosted Site\n---\n\nHosted body")
+
+    monkeypatch.setattr("src.crawler.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
+
+    items, failures = crawl_urls(["https://example.com/report"])
+
+    assert failures == []
+    assert len(items) == 1
+    assert items[0].title == "Hosted Title"
+    assert items[0].metadata["site"] == "Hosted Site"
+    assert items[0].text == "Hosted body"
