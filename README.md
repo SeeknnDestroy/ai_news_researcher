@@ -13,7 +13,7 @@ Features advanced capabilities including:
 - **Python 3.10+** (Recommend **Python 3.13**)
 - **uv** (or `pip`) for dependency management
 - **Node.js** with LiteParse installed if you want to crawl PDF sources
-- An active API key for **xAI** (or compatible LLM endpoints)
+- An active API key for **OpenAI**
 
 ## Installation
 
@@ -59,9 +59,9 @@ The application uses `pydantic-settings` to load configuration automatically fro
    touch .env
    ```
 
-2. Add your **xAI API Key** to the `.env` file:
+2. Add your **OpenAI API Key** to the `.env` file:
    ```env
-   XAI_API_KEY="xai-your-api-key-here"
+   OPENAI_API_KEY="sk-your-api-key-here"
    ```
 
 ### Optional Settings
@@ -79,7 +79,7 @@ The main interface is powered by Typer and executed through `src/cli.py`.
 Prepare an input YAML file (e.g., `inputs/links.yaml`) following the config schema and then run:
 
 ```bash
-python -m src.cli --model grok-4-1-fast-reasoning --max-concurrency 5
+python -m src.cli --model gpt-5.4-nano --max-concurrency 5
 ```
 
 By default it expects a `.yaml` configuration to govern the current run inputs in monthly folders (e.g. `inputs/2026-03/links_13-03-2026.yaml`). Existing legacy flat files under `inputs/` are still accepted as a fallback.
@@ -119,13 +119,13 @@ Notes:
 - On first use, macOS may ask for permission to let your terminal control Google Chrome.
 
 **CLI Options:**
-- `--model <model_name>`: Change the xAI model (default: `grok-4-1-fast-reasoning`)
+- `--model <model_name>`: Change the OpenAI model (default: `gpt-5.4-nano`)
 - `--temperature <float>`: Sampling temperature (default: `0.2`)
 - `--max-concurrency <int>`: Restrict maximum simultaneous crawls (default: `3`)
 
 ### Artifacts and Output
 - **Reports:** The final summarized markdown document will be written to `reports/YYYY-MM/`.
-- **Artifacts:** Debug logs, drafts, crawler text snapshots, and newsletter splits will be persisted in `artifacts/run_<timestamp>/`.
+- **Artifacts:** Debug logs, drafts, crawler text snapshots, newsletter splits, and per-run LLM usage metrics will be persisted in `artifacts/run_<timestamp>/`.
 
 ### PDF Sources
 - PDF crawling is handled by LiteParse via its Python wrapper with OCR enabled by default.
