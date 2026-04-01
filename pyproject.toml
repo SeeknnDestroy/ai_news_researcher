@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "ai-news-researcher"
 version = "0.1.0"
@@ -34,7 +38,7 @@ dev = [
 capture-links = "src.capture_links_cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+only-include = ["src"]
 
 [tool.ruff]
 line-length = 100

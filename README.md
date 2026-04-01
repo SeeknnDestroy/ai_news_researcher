@@ -33,6 +33,11 @@ Features advanced capabilities including:
    uv pip install -e .
    ```
 
+   Or, to create the virtualenv and install the project in one step:
+   ```bash
+   uv sync
+   ```
+
    *Alternatively, using `pip`:*
    ```bash
    python3 -m venv .venv
@@ -111,6 +116,12 @@ If you install the package entrypoints, the same helper is also available as:
 
 ```bash
 capture-links
+```
+
+If you are not running inside the activated virtualenv, use:
+
+```bash
+uv run capture-links
 ```
 
 Notes:
