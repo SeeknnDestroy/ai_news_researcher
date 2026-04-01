@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class SummaryPayload(BaseModel):
@@ -72,10 +72,11 @@ class DraftOutlineArticle(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     heading: str
+    primary_url: str
     news_urls_included: list[str] = Field(default_factory=list)
     content_plan: str = ""
 
-    @field_validator("heading", "content_plan", mode="before")
+    @field_validator("heading", "primary_url", "content_plan", mode="before")
     @classmethod
     def _normalize_text(cls, value: object) -> str:
         return str(value or "").strip()
@@ -93,6 +94,28 @@ class DraftOutlineArticle(BaseModel):
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    @field_validator("primary_url")
+    @classmethod
+    def _require_primary_url(cls, value: str) -> str:
+        if not value:
+            raise ValueError("primary_url is required")
+        return value
+
+    @field_validator("news_urls_included")
+    @classmethod
+    def _require_limited_urls(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("news_urls_included must include at least one URL")
+        if len(value) > 2:
+            raise ValueError("news_urls_included may contain at most two URLs")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_primary_url_membership(self):
+        if self.primary_url not in self.news_urls_included:
+            raise ValueError("primary_url must be one of news_urls_included")
+        return self
 
 
 class DraftOutlineTheme(BaseModel):
@@ -153,3 +176,22 @@ class JudgeEvaluation(BaseModel):
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+
+class FinalReportArticlePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    gelisme: str
+    neden_onemli: str
+
+    @field_validator("gelisme", "neden_onemli", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("gelisme", "neden_onemli")
+    @classmethod
+    def _require_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("required text field is empty")
+        return value

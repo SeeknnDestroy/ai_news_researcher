@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ..domain.contracts import DraftOutline, JudgeEvaluation
+from ..domain.contracts import DraftOutline, FinalReportArticlePayload, JudgeEvaluation
 from ..domain.models import ExcludedItem, SummaryItem
 from ..infrastructure.llm_client import LLMClient
 from ..templates.prompts import (
@@ -67,25 +67,25 @@ async def generate_final_report(
     else:
         report_parts.append(f"# {outline.report_title}\n")
 
-    tasks = []
     for theme in outline.themes:
-        theme_urls = {url for article in theme.articles for url in article.news_urls_included}
-        theme_summaries = [item for item in summaries if item.url in theme_urls] or summaries
-        prompt = theme_report_agent_user_prompt(
-            theme_json=theme.model_dump_json(indent=2),
-            summaries_yaml=_theme_summaries_yaml(theme_summaries),
-            critique=critique,
-        )
-        tasks.append(
-            client.generate_text(
-                system=THEME_REPORT_AGENT_SYSTEM_PROMPT,
-                user=prompt,
-            )
-        )
+        report_parts.append(f"## {theme.theme_name}\n")
+        if theme.theme_commentary:
+            report_parts.append(f"\n{theme.theme_commentary}\n")
 
-    for result in await asyncio.gather(*tasks):
-        report_parts.append(result)
-        report_parts.append("\n")
+        article_tasks = [
+            _generate_article_section(
+                client=client,
+                article=article,
+                summaries=summaries,
+                theme_name=theme.theme_name,
+                critique=critique,
+            )
+            for article in theme.articles
+        ]
+
+        for section in await asyncio.gather(*article_tasks):
+            report_parts.append(section)
+            report_parts.append("\n")
 
     report = "\n".join(report_parts)
     if excluded:
@@ -93,6 +93,46 @@ async def generate_final_report(
         for item in excluded:
             report += f"- {item.url} - {item.reason}\n"
     return report
+
+
+async def _generate_article_section(
+    *,
+    client: LLMClient,
+    article,
+    summaries: list[SummaryItem],
+    theme_name: str,
+    critique: str,
+) -> str:
+    summary_map = {item.url: item for item in summaries}
+    primary_summary = summary_map.get(article.primary_url)
+    supporting_summaries = [summary_map[url] for url in article.news_urls_included if url != article.primary_url and url in summary_map]
+    available_summaries = [item for item in [primary_summary, *supporting_summaries] if item is not None]
+    fallback_summary = available_summaries[0] if available_summaries else summaries[0]
+    if not available_summaries:
+        supporting_summaries = [item for item in summaries if item.url != fallback_summary.url]
+    prompt = theme_report_agent_user_prompt(
+        theme_name=theme_name,
+        article_json=article.model_dump_json(indent=2),
+        primary_summary_yaml=_article_summary_yaml(primary_summary or fallback_summary),
+        supporting_summaries_yaml=_theme_summaries_yaml(supporting_summaries),
+        critique=critique,
+    )
+    article_payload = await client.generate_structured(
+        system=THEME_REPORT_AGENT_SYSTEM_PROMPT,
+        user=prompt,
+        schema=FinalReportArticlePayload,
+        task_name="final_report_theme",
+    )
+    source_summary = primary_summary or fallback_summary
+    return "\n".join(
+        [
+            f"### <u>**{article.heading}**</u>",
+            f"- **Tarih:** {format_date(source_summary.date)}",
+            f"- **Kaynak:** [[{source_summary.source_name}]({source_summary.url})]",
+            f"- **Gelişme:** {article_payload.gelisme}",
+            f"- **Neden Önemli:** {article_payload.neden_onemli}",
+        ]
+    )
 
 
 def _summaries_yaml(summaries: list[SummaryItem]) -> str:
@@ -106,6 +146,8 @@ def _summaries_yaml(summaries: list[SummaryItem]) -> str:
 
 
 def _theme_summaries_yaml(summaries: list[SummaryItem]) -> str:
+    if not summaries:
+        return "None\n"
     lines: list[str] = []
     for item in summaries:
         lines.append(f"- URL: {item.url}")
@@ -115,3 +157,7 @@ def _theme_summaries_yaml(summaries: list[SummaryItem]) -> str:
         lines.append(f"  Gelisme: {item.summary_tr}")
         lines.append(f"  Neden Onemli: {item.why_it_matters_tr}\n")
     return "\n".join(lines)
+
+
+def _article_summary_yaml(summary: SummaryItem) -> str:
+    return _theme_summaries_yaml([summary])

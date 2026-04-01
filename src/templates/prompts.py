@@ -153,14 +153,15 @@ JSON Schema (Exact matches only):
 {{
   "report_title": "Concise weekly report title in Turkish",
   "introduction_commentary": "1-2 sentence portfolio-level framing of the week",
-  "themes": [
+ "themes": [
     {{
       "theme_name": "1. Theme name in Turkish (e.g. 1. Agentic SDLC ve Kodlama Otomasyonu)",
       "theme_commentary": "Optional 1-2 sentence introduction for the theme.",
       "articles": [
         {{
           "heading": "Very concise professional subheader (e.g., 'Gemini Takes the Lead')",
-          "news_urls_included": ["url1", "url2"],
+          "primary_url": "Primary source URL for this single story block",
+          "news_urls_included": ["primary_url", "optional corroborating url"],
           "content_plan": "Brief coverage plan using only facts already present in the summaries."
         }}
       ]
@@ -171,10 +172,16 @@ JSON Schema (Exact matches only):
 Remember:
 - Order the themes and articles by IMPORTANCE (most critical first).
 - Every summarized article URL must appear exactly once in `news_urls_included`.
+- Each article block should represent one primary story.
+- `primary_url` is mandatory and must be one of `news_urls_included`.
+- Default to exactly one URL per article block.
+- Use a second URL only when it is truly corroborating or adding tightly coupled context to the same development.
+- Never put 3 or more URLs in a single article block.
 - Do not create empty themes.
 - Headings MUST be professional and concise, ideally 3-7 words.
 - Avoid generic theme names like "Diğer Haberler" unless absolutely necessary.
 - Do not overfit to banking language.
+- Do NOT merge distinct product launches, safety cards, policy conflicts, or separate vendor updates into a single article block just because they share a broad theme.
 - Consider a final theme named `Engineering` only if some items are clearly more implementation-heavy and less executive-friendly than the rest.
 - Prefer `Engineering` when there are at least 2 related technical/developer-heavy items.
 - If there is only 1 such item, use `Engineering` only if it is exceptionally implementation-heavy; otherwise keep it in the closest main theme.
@@ -195,8 +202,9 @@ The audience is mixed: executives and technical leads at Garanti BBVA Tech.
 Your evaluation criteria:
 1. CONSTANTS: Are the headings concise, BS-free, and understandable? (e.g. "Gemini Takes the Lead" = PASS. "Unveiling the Mysteries of..." = FAIL).
 2. PRIORITIZATION: Is the most important news at the top?
-3. PROFESSIONALISM & OVERFITTING: Is the commentary professional? Ensure the text does NOT overfit or spam the word "banka" (bank) unnaturally just to pander to the audience. It should sound like a global tech report tailored for efficiency in SDLC, not a forced banking newsletter. 
-4. LANGUAGE: Is the text written in professional Turkish but keeping standard global tech/AI jargon in English (e.g. "Agentic", not "Ajantik"). Check for any awkward translated tech terms.
+3. STORY SEPARATION: Does each article block represent one primary story? Fail the draft if unrelated developments are merged under one heading, if too many distinct updates are collapsed into umbrella sections, or if broad buckets hide the important story boundaries.
+4. PROFESSIONALISM & OVERFITTING: Is the commentary professional? Ensure the text does NOT overfit or spam the word "banka" (bank) unnaturally just to pander to the audience. It should sound like a global tech report tailored for efficiency in SDLC, not a forced banking newsletter. 
+5. LANGUAGE: Is the text written in professional Turkish but keeping standard global tech/AI jargon in English (e.g. "Agentic", not "Ajantik"). Check for any awkward translated tech terms.
 
 You will return a pass/fail judgment and a critique. Return ONLY valid JSON. Ensure that the critique and fixes are written FIRST to perform Chain-of-Thought, and the pass/fail boolean is evaluated at the end.
 """
@@ -214,7 +222,7 @@ JSON Schema (Write your detailed critique first before rendering the final pass/
   "passes_criteria": true/false
 }}
 
-Be strict. If the headings are too long or clickbaity, fail it. If 'banka' is spammed, fail it. If weird translated English AI jargon is used instead of native English terms, fail it.
+Be strict. If the headings are too long or clickbaity, fail it. If unrelated stories are merged under one heading, fail it. If strategically important developments are buried inside generic buckets like broad platform or generic Engineering themes, fail it. If 'banka' is spammed, fail it. If weird translated English AI jargon is used instead of native English terms, fail it.
 
 Draft Outline:
 {draft_json}
@@ -222,43 +230,53 @@ Draft Outline:
 
 
 THEME_REPORT_AGENT_SYSTEM_PROMPT = """
-You are the Theme Synthesis Writer for a high-signal GenAI technical report.
-You will receive an approved Theme Outline and the Original Summaries relevant to that theme.
-Your job is to turn this specific theme into final report prose in professional Turkish.
+You are the article synthesis writer for a high-signal GenAI technical report.
+You will receive one approved article block, one primary summary, and optional supporting summaries.
+Your job is to write ONLY the prose content for:
+- Gelişme
+- Neden Önemli
 
-CRITICAL FORMATTING RULES (DO NOT DEVIATE):
-- Use Markdown.
-- Start with the Theme name exactly as an H2 (`## 1. Theme Name`) and output its `theme_commentary` as a paragraph below it if present.
-- Output each article's heading exactly as an H3 that is underlined and bold: `### <u>**Your Heading Here**</u>`.
-- UNDER EACH ARTICLE HEADING, you MUST output a bulleted list with EXACTLY these 4 items (in this order):
-  * **Tarih:** [Date from the original summary]
-  * **Kaynak:** [[Source Name](URL)]
-  * **Gelişme:** [Technical summary, with strategic **bolding** of key metrics, sizes, % increases. DO NOT OVERLY USE BOLDING, IT SHOULD BE USED SPARINGLY.]
-  * **Neden Önemli:** [Strategic importance. If relevant to Banking/SDLC/Efficiency, mention it clearly but don't force it.]
-- Preserve the article order from the approved outline.
-- Use ONLY facts from the Original Summaries. Do not hallucinate, speculate, or import outside knowledge.
+Rules:
+- Return ONLY valid JSON.
+- Use the primary summary as the anchor for the article.
+- Supporting summaries may add tightly related corroboration or context, but do not let them change the article into a different story.
+- Do not invent facts, metrics, dates, sources, motives, or causal claims.
 - Keep the tone clinical, technical, and executive-friendly.
 - Keep standard AI/engineering jargon in English when that is the natural term.
 - `Gelişme` should explain the concrete development first, then the most relevant technical specifics.
 - `Neden Önemli` should explain the operational or strategic implication, not repeat `Gelişme`.
-- If a summary is uncertain or source-attributed, preserve that nuance instead of overstating certainty.
-- Do not add a sources appendix, conclusion, or any headings beyond the required theme/article headings.
+- If the primary summary is uncertain or source-attributed, preserve that nuance instead of overstating certainty.
+- Use strategic bolding sparingly.
 """
 
-def theme_report_agent_user_prompt(theme_json: str, summaries_yaml: str, critique: str = "") -> str:
+def theme_report_agent_user_prompt(
+    theme_name: str,
+    article_json: str,
+    primary_summary_yaml: str,
+    supporting_summaries_yaml: str,
+    critique: str = "",
+) -> str:
     critique_section = f"Judge's Critique to keep in mind:\n{critique}\n" if critique else ""
     return f"""
-Produce the Markdown section for this specific Theme.
+Produce the article prose payload for this specific article block.
 
 {critique_section}
 
-Approved Theme Outline:
-{theme_json}
+Theme:
+{theme_name}
 
-Original Summaries for this Theme:
-{summaries_yaml}
+Approved Article Block:
+{article_json}
 
-Provide the complete Markdown string for this theme section only.
-Do not add a main `#` title, an overall introduction, a conclusion, or a global `Kaynaklar` section.
-Write ONLY this theme.
+Return ONLY JSON with this schema:
+{{
+  "gelisme": "2-4 sentence technical development summary in Turkish",
+  "neden_onemli": "1-2 sentence strategic implication in Turkish"
+}}
+
+Primary Summary:
+{primary_summary_yaml}
+
+Supporting Summaries:
+{supporting_summaries_yaml}
 """
