@@ -5,11 +5,12 @@ from datetime import date
 import pytest
 
 from src.application.ai_tasks import generate_final_report, split_newsletter_items_async
-from src.application.report_workflow import ReportWorkflowService
+from src.application.report_workflow import ReportWorkflowService, validate_outline_structure
 from src.domain.contracts import (
     DraftOutline,
     DraftOutlineArticle,
     DraftOutlineTheme,
+    FinalReportArticlePayload,
     JudgeEvaluation,
     NewsletterSplitItemPayload,
     NewsletterSplitPayload,
@@ -23,8 +24,10 @@ class FakeLLM:
         self._structured = {key: list(value) for key, value in (structured or {}).items()}
         self._text = list(text or [])
         self.generated_prompts: list[str] = []
+        self.generated_structured_prompts: list[tuple[str, str]] = []
 
     async def generate_structured(self, *, system: str, user: str, schema, task_name: str):
+        self.generated_structured_prompts.append((task_name, user))
         del system, user
         try:
             result = self._structured[task_name].pop(0)
@@ -117,14 +120,21 @@ async def test_generate_final_report_falls_back_to_all_summaries_and_appends_exc
     theme = DraftOutlineTheme(
         theme_name="Theme A",
         theme_commentary="Theme intro",
-        articles=[DraftOutlineArticle(heading="Heading", news_urls_included=["https://missing"], content_plan="Plan")],
+        articles=[
+            DraftOutlineArticle(
+                heading="Heading",
+                primary_url="https://missing",
+                news_urls_included=["https://missing"],
+                content_plan="Plan",
+            )
+        ],
     )
     outline = DraftOutline(report_title="Weekly", introduction_commentary="Intro", themes=[theme])
     excluded = [ExcludedItem(url="https://excluded", reason="no signal")]
-    llm = FakeLLM(text=["section text"])
+    llm = FakeLLM(structured={"final_report_theme": [FinalReportArticlePayload(gelisme="Gelisme", neden_onemli="Onemli")]})
     report = await generate_final_report(llm, outline, summaries, excluded)
-    assert "First Title" in llm.generated_prompts[0]
-    assert "Second Title" in llm.generated_prompts[0]
+    assert "First Title" in llm.generated_structured_prompts[0][1]
+    assert "Second Title" in llm.generated_structured_prompts[0][1]
     assert "## Kullanilamayan Kaynaklar" in report
     assert "https://excluded" in report
 
@@ -133,7 +143,14 @@ def _draft_outline() -> DraftOutline:
     theme = DraftOutlineTheme(
         theme_name="Theme",
         theme_commentary="overview",
-        articles=[DraftOutlineArticle(heading="Heading", news_urls_included=["https://first"], content_plan="Plan")],
+        articles=[
+            DraftOutlineArticle(
+                heading="Heading",
+                primary_url="https://first",
+                news_urls_included=["https://first"],
+                content_plan="Plan",
+            )
+        ],
     )
     return DraftOutline(report_title="Weekly", introduction_commentary="Intro", themes=[theme])
 
@@ -144,8 +161,8 @@ async def test_report_workflow_skips_revisions_when_eval_disabled():
         structured={
             "draft_outline": [_draft_outline()],
             "judge_evaluation": [JudgeEvaluation(critique="ok", specific_fixes_required=[], passes_criteria=True)],
+            "final_report_theme": [FinalReportArticlePayload(gelisme="Gelisme", neden_onemli="Onemli")],
         },
-        text=["final"],
     )
     service = ReportWorkflowService(llm_client=llm)
     results = await service.run(summaries=[_summary_item("https://first", "First Title")], excluded=[], eval_enabled=False)
@@ -163,11 +180,128 @@ async def test_report_workflow_retries_once_when_eval_enabled():
                 JudgeEvaluation(critique="needs work", specific_fixes_required=["move faster"], passes_criteria=False),
                 JudgeEvaluation(critique="now stable", specific_fixes_required=[], passes_criteria=True),
             ],
+            "final_report_theme": [FinalReportArticlePayload(gelisme="Gelisme", neden_onemli="Onemli")],
         },
-        text=["final"],
     )
     service = ReportWorkflowService(llm_client=llm)
     results = await service.run(summaries=[_summary_item("https://first", "First Title")], excluded=[], eval_enabled=True)
     assert results.revision_count == 1
     assert len(results.critique_history) == 1
     assert "move faster" in results.critique_history[0]
+
+
+@pytest.mark.asyncio
+async def test_generate_final_report_uses_primary_url_for_source_and_date():
+    primary = _summary_item("https://primary", "Primary Title")
+    supporting = _summary_item("https://supporting", "Supporting Title")
+    supporting.source_name = "supporting-source"
+    supporting.date = date(2026, 3, 12)
+    theme = DraftOutlineTheme(
+        theme_name="Theme A",
+        articles=[
+            DraftOutlineArticle(
+                heading="Heading",
+                primary_url="https://primary",
+                news_urls_included=["https://primary", "https://supporting"],
+                content_plan="Plan",
+            )
+        ],
+    )
+    outline = DraftOutline(report_title="Weekly", themes=[theme])
+    llm = FakeLLM(structured={"final_report_theme": [FinalReportArticlePayload(gelisme="Gelisme", neden_onemli="Onemli")]})
+
+    report = await generate_final_report(llm, outline, [primary, supporting], [])
+
+    assert "**Kaynak:** [[source](https://primary)]" in report
+    assert "**Tarih:** 11 March 2026" in report
+    prompt_text = llm.generated_structured_prompts[0][1]
+    assert "Primary Summary:" in prompt_text
+    assert "Supporting Summaries:" in prompt_text
+    assert "Supporting Title" in prompt_text
+
+
+def test_validate_outline_structure_rejects_over_grouped_outline():
+    summaries = [_summary_item(f"https://example.com/{index}", f"Title {index}") for index in range(28)]
+    articles = []
+    for index in range(10):
+        start = index * 2
+        article_urls = [item.url for item in summaries[start : start + 2]]
+        articles.append(
+            DraftOutlineArticle.model_construct(
+                heading=f"Heading {index}",
+                primary_url=article_urls[0],
+                news_urls_included=article_urls,
+                content_plan="Plan",
+            )
+        )
+    outline = DraftOutline(
+        report_title="Weekly",
+        themes=[DraftOutlineTheme(theme_name="1. Theme", articles=articles)],
+    )
+
+    errors = validate_outline_structure(outline, summaries)
+
+    assert any("at least" in error for error in errors)
+    assert any("multi-URL article blocks" in error for error in errors)
+
+
+@pytest.mark.asyncio
+async def test_report_workflow_retries_when_outline_validation_fails():
+    bad_outline = DraftOutline(
+        report_title="Weekly",
+        themes=[
+            DraftOutlineTheme(
+                theme_name="1. Theme",
+                articles=[
+                    DraftOutlineArticle(
+                        heading="Heading",
+                        primary_url="https://first",
+                        news_urls_included=["https://first"],
+                        content_plan="Plan",
+                    )
+                ],
+            )
+        ],
+    )
+    good_outline = DraftOutline(
+        report_title="Weekly",
+        themes=[
+            DraftOutlineTheme(
+                theme_name="1. Theme",
+                articles=[
+                    DraftOutlineArticle(
+                        heading="Heading One",
+                        primary_url="https://first",
+                        news_urls_included=["https://first"],
+                        content_plan="Plan",
+                    ),
+                    DraftOutlineArticle(
+                        heading="Heading Two",
+                        primary_url="https://second",
+                        news_urls_included=["https://second"],
+                        content_plan="Plan",
+                    ),
+                ],
+            )
+        ],
+    )
+    llm = FakeLLM(
+        structured={
+            "draft_outline": [bad_outline, good_outline],
+            "judge_evaluation": [
+                JudgeEvaluation(critique="judge ok", specific_fixes_required=[], passes_criteria=True),
+                JudgeEvaluation(critique="judge ok", specific_fixes_required=[], passes_criteria=True),
+            ],
+            "final_report_theme": [
+                FinalReportArticlePayload(gelisme="Gelisme bir", neden_onemli="Onemli bir"),
+                FinalReportArticlePayload(gelisme="Gelisme iki", neden_onemli="Onemli iki"),
+            ],
+        },
+    )
+    service = ReportWorkflowService(llm_client=llm)
+    summaries = [_summary_item("https://first", "First Title"), _summary_item("https://second", "Second Title")]
+
+    results = await service.run(summaries=summaries, excluded=[], eval_enabled=True)
+
+    assert results.revision_count == 1
+    assert any("Deterministic outline validation failed" in item for item in results.critique_history)

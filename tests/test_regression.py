@@ -109,8 +109,16 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
                 {
                     "theme_name": "1. Agents",
                     "articles": [
-                        {"heading": "Alpha heading", "news_urls_included": ["https://example.com/a"]},
-                        {"heading": "Beta heading", "news_urls_included": ["https://example.com/b"]},
+                        {
+                            "heading": "Alpha heading",
+                            "primary_url": "https://example.com/a",
+                            "news_urls_included": ["https://example.com/a"],
+                        },
+                        {
+                            "heading": "Beta heading",
+                            "primary_url": "https://example.com/b",
+                            "news_urls_included": ["https://example.com/b"],
+                        },
                     ],
                 }
             ],
@@ -150,7 +158,11 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
                 {
                     "theme_name": "1. Agents",
                     "articles": [
-                        {"heading": "Alpha heading", "news_urls_included": ["https://example.com/a"]},
+                        {
+                            "heading": "Alpha heading",
+                            "primary_url": "https://example.com/a",
+                            "news_urls_included": ["https://example.com/a"],
+                        },
                     ],
                 }
             ],
@@ -214,6 +226,7 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
                                 "articles": [
                                     {
                                         "heading": "Alpha heading",
+                                        "primary_url": "https://example.com/a",
                                         "news_urls_included": ["https://example.com/a"],
                                         "content_plan": "Plan",
                                     }
@@ -274,11 +287,12 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
                                     "theme_name": "1. Agents",
                                     "theme_commentary": "Commentary",
                                     "articles": [
-                                        {
-                                            "heading": "Alpha heading",
-                                            "news_urls_included": ["https://example.com/a"],
-                                            "content_plan": "Plan",
-                                        }
+                                            {
+                                                "heading": "Alpha heading",
+                                                "primary_url": "https://example.com/a",
+                                                "news_urls_included": ["https://example.com/a"],
+                                                "content_plan": "Plan",
+                                            }
                                     ],
                                 }
                             ],

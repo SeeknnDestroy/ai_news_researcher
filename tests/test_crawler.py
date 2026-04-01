@@ -1,21 +1,231 @@
+from __future__ import annotations
+
 import json
-from types import SimpleNamespace
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import httpx
+import pytest
 
-from src.crawler import _extract_pdf_text, _parse_defuddle_response, crawl_urls
-import yaml
-
-def test_parse_defuddle_response():
-    markdown = "---\ntitle: \"Moonshot lands a big one\"\nsource: \"https://example.com\"\n---\n\n# Main Content\n\nMore details."
-    item = _parse_defuddle_response("https://example.com/article", markdown, yaml)
-    
-    assert item.title == "Moonshot lands a big one"
-    assert item.url == "https://example.com/article"
-    assert item.text == "# Main Content\n\nMore details."
+from src.crawler import _extract_pdf_text, crawl_urls
 
 
-def test_extract_pdf_text_returns_empty_on_request_error(monkeypatch):
+class _FakeMarkdown:
+    def __init__(self, *, fit_markdown: str = "", raw_markdown: str = "", markdown: str = "") -> None:
+        self.fit_markdown = fit_markdown
+        self.raw_markdown = raw_markdown
+        self.markdown = markdown
+
+
+class _FakeCrawlResult:
+    def __init__(
+        self,
+        *,
+        url: str,
+        success: bool,
+        title: str | None = None,
+        fit_markdown: str = "",
+        raw_markdown: str = "",
+        cleaned_html: str = "",
+        metadata: dict[str, object] | None = None,
+        error_message: str = "",
+        status_code: int | None = None,
+        redirected_url: str | None = None,
+    ) -> None:
+        self.url = url
+        self.success = success
+        self.title = title
+        self.markdown = _FakeMarkdown(
+            fit_markdown=fit_markdown,
+            raw_markdown=raw_markdown,
+        )
+        self.cleaned_html = cleaned_html
+        self.metadata = metadata or {}
+        self.error_message = error_message
+        self.status_code = status_code
+        self.redirected_url = redirected_url
+
+
+class _FakeBrowserConfig:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeCrawlerRunConfig:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeDefaultMarkdownGenerator:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+class _FakePruningContentFilter:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeMemoryAdaptiveDispatcher:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.max_session_permit = kwargs.get("max_session_permit")
+
+
+class _FakeUndetectedAdapter:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeAsyncPlaywrightCrawlerStrategy:
+    def __init__(self, *, browser_config=None, browser_adapter=None) -> None:
+        self.browser_config = browser_config
+        self.browser_adapter = browser_adapter
+
+
+class _FakeAsyncWebCrawler:
+    instances: list["_FakeAsyncWebCrawler"] = []
+    arun_many_calls: list[dict[str, object]] = []
+
+    def __init__(self, *, config=None, crawler_strategy=None) -> None:
+        self.config = config
+        self.crawler_strategy = crawler_strategy
+        self.__class__.instances.append(self)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def arun_many(self, *, urls, config, dispatcher=None):
+        self.__class__.arun_many_calls.append(
+            {
+                "urls": list(urls),
+                "config": config,
+                "dispatcher": dispatcher,
+                "strategy": self.crawler_strategy,
+                "browser_config": self.config,
+            }
+        )
+
+        if self.crawler_strategy is None:
+            return [
+                _FakeCrawlResult(
+                    url="https://example.com/a",
+                    success=True,
+                    fit_markdown="A fit markdown",
+                    raw_markdown="A raw markdown",
+                    title="Article A",
+                    metadata={"title": "Article A", "final_url": "https://example.com/a?ref=1"},
+                    redirected_url="https://example.com/a?ref=1",
+                ),
+                _FakeCrawlResult(
+                    url="https://example.com/b",
+                    success=True,
+                    fit_markdown="",
+                    raw_markdown="B raw markdown",
+                    title="Article B",
+                    metadata={"title": "Article B"},
+                ),
+            ]
+
+        return [
+            _FakeCrawlResult(
+                url="https://example.com/blocked",
+                success=False,
+                error_message="Blocked by anti-bot protection: DataDome captcha",
+                status_code=403,
+                title="Just a moment...",
+                fit_markdown="",
+                raw_markdown="",
+                cleaned_html="",
+                metadata={},
+            )
+        ]
+
+
+def _install_fake_crawl4ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeAsyncWebCrawler.instances = []
+    _FakeAsyncWebCrawler.arun_many_calls = []
+
+    fake_module = ModuleType("crawl4ai")
+    fake_module.AsyncWebCrawler = _FakeAsyncWebCrawler
+    fake_module.BrowserConfig = _FakeBrowserConfig
+    fake_module.CrawlerRunConfig = _FakeCrawlerRunConfig
+    fake_module.CacheMode = SimpleNamespace(BYPASS="BYPASS")
+    fake_module.DefaultMarkdownGenerator = _FakeDefaultMarkdownGenerator
+    fake_module.PruningContentFilter = _FakePruningContentFilter
+    fake_module.UndetectedAdapter = _FakeUndetectedAdapter
+
+    fake_dispatcher_module = ModuleType("crawl4ai.async_dispatcher")
+    fake_dispatcher_module.MemoryAdaptiveDispatcher = _FakeMemoryAdaptiveDispatcher
+
+    fake_strategy_module = ModuleType("crawl4ai.async_crawler_strategy")
+    fake_strategy_module.AsyncPlaywrightCrawlerStrategy = _FakeAsyncPlaywrightCrawlerStrategy
+
+    monkeypatch.setitem(sys.modules, "crawl4ai", fake_module)
+    monkeypatch.setitem(sys.modules, "crawl4ai.async_dispatcher", fake_dispatcher_module)
+    monkeypatch.setitem(sys.modules, "crawl4ai.async_crawler_strategy", fake_strategy_module)
+
+
+def test_crawl_urls_uses_shared_crawl4ai_session_and_prefers_fit_markdown(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_crawl4ai(monkeypatch)
+
+    items, failures = crawl_urls(
+        ["https://example.com/a", "https://example.com/b"],
+        max_concurrency=2,
+    )
+
+    assert failures == []
+    assert [item.url for item in items] == ["https://example.com/a", "https://example.com/b"]
+    assert items[0].text == "A fit markdown"
+    assert items[1].text == "B raw markdown"
+    assert items[0].title == "Article A"
+    assert items[0].metadata["final_url"] == "https://example.com/a?ref=1"
+    assert items[0].origin_url == "https://example.com/a"
+    assert len(_FakeAsyncWebCrawler.instances) == 1
+    assert len(_FakeAsyncWebCrawler.arun_many_calls) == 1
+    assert _FakeAsyncWebCrawler.arun_many_calls[0]["urls"] == ["https://example.com/a", "https://example.com/b"]
+    assert _FakeAsyncWebCrawler.arun_many_calls[0]["dispatcher"].max_session_permit == 2
+
+
+def test_crawl_urls_classifies_blocked_pages_stably(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_crawl4ai(monkeypatch)
+
+    original_arun_many = _FakeAsyncWebCrawler.arun_many
+
+    async def blocked_arun_many(self, *, urls, config, dispatcher=None):
+        if self.crawler_strategy is None:
+            return [
+                _FakeCrawlResult(
+                    url="https://www.reuters.com/story",
+                    success=False,
+                    error_message="Blocked by anti-bot protection: DataDome captcha",
+                    status_code=403,
+                    title="Just a moment...",
+                    metadata={},
+                )
+            ]
+        return await original_arun_many(self, urls=urls, config=config, dispatcher=dispatcher)
+
+    monkeypatch.setattr(_FakeAsyncWebCrawler, "arun_many", blocked_arun_many)
+
+    items, failures = crawl_urls(["https://www.reuters.com/story"], max_concurrency=1)
+
+    assert items == []
+    assert failures == [
+        (
+            "https://www.reuters.com/story",
+            "blocked by anti-bot protection: DataDome captcha",
+        )
+    ]
+    assert len(_FakeAsyncWebCrawler.instances) == 2
+    assert _FakeAsyncWebCrawler.instances[1].crawler_strategy is not None
+
+
+def test_extract_pdf_text_returns_empty_on_request_error(monkeypatch: pytest.MonkeyPatch):
     class FakeClient:
         def __enter__(self):
             return self
@@ -31,7 +241,7 @@ def test_extract_pdf_text_returns_empty_on_request_error(monkeypatch):
     assert _extract_pdf_text("https://example.com/test.pdf") == ""
 
 
-def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monkeypatch):
+def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monkeypatch: pytest.MonkeyPatch):
     pdf_bytes = b"%PDF-1.4 fake"
 
     class FakeClient:
@@ -54,7 +264,10 @@ def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monke
     fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=FakeCLINotFoundError)
 
     monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
-    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+    monkeypatch.setattr(
+        "src.crawler.importlib.import_module",
+        lambda name: fake_module if name == "liteparse" else __import__(name),
+    )
 
     items, failures = crawl_urls(["https://example.com/report.pdf"])
 
@@ -67,71 +280,7 @@ def test_crawl_pdf_url_reports_liteparse_install_hint_when_runtime_missing(monke
     ]
 
 
-def test_empty_defuddle_response_for_non_pdf_url_returns_defuddle_failure(monkeypatch):
-    class FakeCompletedProcess:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = json.dumps({"content": "", "title": ""})
-            self.stderr = ""
-
-    async def fake_browser_fallback(url):
-        del url
-        return None, "Browser fallback returned empty content"
-
-    async def fake_crawl4ai(url):
-        del url
-        return None, "crawl4ai returned empty content"
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert items == []
-    assert failures == [
-        (
-            "https://example.com/report",
-            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content); crawl4ai failed (crawl4ai returned empty content)",
-        )
-    ]
-
-
-def test_empty_defuddle_response_for_non_pdf_url_skips_pdf_fallback(monkeypatch):
-    class FakeCompletedProcess:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = json.dumps({"content": "", "title": ""})
-            self.stderr = ""
-
-    def fail_if_called(url):
-        raise AssertionError("PDF fallback should not run for non-PDF URLs")
-
-    async def fake_browser_fallback(url):
-        del url
-        return None, "Browser fallback returned empty content"
-
-    async def fake_crawl4ai(url):
-        del url
-        return None, "crawl4ai returned empty content"
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
-    monkeypatch.setattr("src.crawler._crawl_pdf", fail_if_called)
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert items == []
-    assert failures == [
-        (
-            "https://example.com/report",
-            "local defuddle failed (Empty response from defuddle); browser fallback failed (Browser fallback returned empty content); crawl4ai failed (crawl4ai returned empty content)",
-        )
-    ]
-
-
-def test_crawl_pdf_url_uses_liteparse_text(monkeypatch):
+def test_crawl_pdf_url_uses_liteparse_text(monkeypatch: pytest.MonkeyPatch):
     pdf_bytes = b"%PDF-1.4 fake"
 
     class FakeClient:
@@ -152,7 +301,10 @@ def test_crawl_pdf_url_uses_liteparse_text(monkeypatch):
     fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=RuntimeError)
 
     monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
-    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
+    monkeypatch.setattr(
+        "src.crawler.importlib.import_module",
+        lambda name: fake_module if name == "liteparse" else __import__(name),
+    )
 
     items, failures = crawl_urls(["https://example.com/report.pdf"])
 
@@ -162,216 +314,3 @@ def test_crawl_pdf_url_uses_liteparse_text(monkeypatch):
     assert items[0].metadata == {"content_type": "application/pdf"}
     assert items[0].title == "report"
 
-
-def test_crawl_pdf_url_reports_stable_liteparse_failure(monkeypatch):
-    pdf_bytes = b"%PDF-1.4 fake"
-
-    class FakeClient:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def get(self, url, headers, follow_redirects):
-            return SimpleNamespace(content=pdf_bytes, raise_for_status=lambda: None)
-
-    class FakeParseError(Exception):
-        pass
-
-    class FakeLiteParse:
-        def parse(self, file_path, ocr_enabled=True):
-            raise FakeParseError("unexpected stderr")
-
-    fake_module = SimpleNamespace(LiteParse=FakeLiteParse, CLINotFoundError=RuntimeError)
-
-    monkeypatch.setattr("src.crawler.httpx.Client", lambda timeout: FakeClient())
-    monkeypatch.setattr("src.crawler.importlib.import_module", lambda name: fake_module if name == "liteparse" else __import__(name))
-
-    items, failures = crawl_urls(["https://example.com/report.pdf"])
-
-    assert items == []
-    assert failures == [("https://example.com/report.pdf", "LiteParse failed to parse PDF")]
-
-
-def test_crawl_html_uses_local_defuddle_cli_before_hosted_api(monkeypatch):
-    class FakeCompletedProcess:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = json.dumps(
-                {
-                    "content": "# Main Content\n\nRecovered locally.",
-                    "title": "Local Title",
-                    "site": "Example Site",
-                }
-            )
-            self.stderr = ""
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCompletedProcess())
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert failures == []
-    assert len(items) == 1
-    assert items[0].title == "Local Title"
-    assert items[0].metadata["site"] == "Example Site"
-    assert items[0].text == "# Main Content\n\nRecovered locally."
-
-
-def test_crawl_html_falls_back_to_local_browser_when_local_cli_hits_fetch_failure(monkeypatch):
-    class FakeCliProcess:
-        def __init__(self):
-            self.returncode = 1
-            self.stdout = ""
-            self.stderr = "Error: Failed to fetch: 403 Forbidden"
-
-    browser_calls: list[str] = []
-
-    async def fake_browser_fallback(url):
-        browser_calls.append(url)
-        return (
-            SimpleNamespace(
-                url=url,
-                text="Browser body",
-                metadata={"site": "Browser Site"},
-                title="Browser Title",
-                origin_url=url,
-            ),
-            None,
-        )
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert failures == []
-    assert len(items) == 1
-    assert items[0].title == "Browser Title"
-    assert items[0].metadata["site"] == "Browser Site"
-    assert items[0].text == "Browser body"
-    assert browser_calls == ["https://example.com/report"]
-
-
-def test_crawl_html_does_not_use_browser_fallback_for_non_fetch_cli_failure(monkeypatch):
-    class FakeCliProcess:
-        def __init__(self):
-            self.returncode = 1
-            self.stdout = ""
-            self.stderr = "Error: invalid json output"
-
-    async def fail_if_called(url):
-        raise AssertionError(f"browser fallback should not run for non-fetch failure: {url}")
-
-    async def fail_crawl4ai_if_called(url):
-        raise AssertionError(f"crawl4ai fallback should not run for non-fetch failure: {url}")
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fail_if_called)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fail_crawl4ai_if_called)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert items == []
-    assert failures == [("https://example.com/report", "invalid json output")]
-
-
-def test_crawl_html_reports_combined_local_failures_when_browser_fallback_also_fails(monkeypatch):
-    class FakeCliProcess:
-        def __init__(self):
-            self.returncode = 1
-            self.stdout = ""
-            self.stderr = "Error: Failed to fetch: 429 Too Many Requests"
-
-    async def fake_browser_fallback(url):
-        del url
-        return None, "Playwright browser fallback failed"
-
-    async def fake_crawl4ai_fallback(url):
-        del url
-        return None, "crawl4ai fallback failed"
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert items == []
-    assert failures == [
-        (
-            "https://example.com/report",
-            "local defuddle failed (Failed to fetch: 429 Too Many Requests); browser fallback failed (Playwright browser fallback failed); crawl4ai failed (crawl4ai fallback failed)",
-        )
-    ]
-
-
-def test_crawl_html_falls_back_to_crawl4ai_when_browser_fallback_fails(monkeypatch):
-    class FakeCliProcess:
-        def __init__(self):
-            self.returncode = 1
-            self.stdout = ""
-            self.stderr = "Error: Failed to fetch: 403 Forbidden"
-
-    async def fake_browser_fallback(url):
-        del url
-        return None, "Blocked by anti-bot challenge"
-
-    async def fake_crawl4ai_fallback(url):
-        return (
-            SimpleNamespace(
-                url=url,
-                text="Crawl4AI body",
-                metadata={"site": "Crawl4AI Site"},
-                title="Crawl4AI Title",
-                origin_url=url,
-            ),
-            None,
-        )
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
-
-    items, failures = crawl_urls(["https://example.com/report"])
-
-    assert failures == []
-    assert len(items) == 1
-    assert items[0].title == "Crawl4AI Title"
-    assert items[0].metadata["site"] == "Crawl4AI Site"
-    assert items[0].text == "Crawl4AI body"
-
-
-def test_crawl_html_treats_anti_bot_challenge_as_failure(monkeypatch):
-    class FakeCliProcess:
-        def __init__(self):
-            self.returncode = 0
-            self.stdout = json.dumps(
-                {
-                    "content": "Verification successful. Waiting for openai.com to respond",
-                    "title": "Just a moment...",
-                }
-            )
-            self.stderr = ""
-
-    async def fake_browser_fallback(url):
-        del url
-        return None, "Blocked by anti-bot challenge"
-
-    async def fake_crawl4ai_fallback(url):
-        del url
-        return None, "Blocked by anti-bot challenge"
-
-    monkeypatch.setattr("src.crawler.subprocess.run", lambda *args, **kwargs: FakeCliProcess())
-    monkeypatch.setattr("src.crawler._crawl_html_with_browser_defuddle", fake_browser_fallback)
-    monkeypatch.setattr("src.crawler._crawl_html_with_crawl4ai", fake_crawl4ai_fallback)
-
-    items, failures = crawl_urls(["https://openai.com/index/test"])
-
-    assert items == []
-    assert failures == [
-        (
-            "https://openai.com/index/test",
-            "local defuddle failed (Blocked by anti-bot challenge); browser fallback failed (Blocked by anti-bot challenge); crawl4ai failed (Blocked by anti-bot challenge)",
-        )
-    ]

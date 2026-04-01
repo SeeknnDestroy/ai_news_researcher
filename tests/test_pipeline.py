@@ -110,6 +110,13 @@ class FakeLLMClient:
         try:
             value = self.structured[task_name].pop(0)
         except (KeyError, IndexError) as exc:
+            if task_name == "final_report_theme":
+                return schema.model_validate(
+                    {
+                        "gelisme": "Theme development summary.",
+                        "neden_onemli": "Theme strategic implication.",
+                    }
+                )
             raise AssertionError(f"unexpected structured task: {task_name}") from exc
         if isinstance(value, Exception):
             raise value
@@ -152,6 +159,7 @@ def _outline(urls: list[str]) -> dict:
                 "articles": [
                     {
                         "heading": "Execution speed improves",
+                        "primary_url": urls[0],
                         "news_urls_included": urls,
                         "content_plan": "Cover the engineering and delivery signals.",
                     }
