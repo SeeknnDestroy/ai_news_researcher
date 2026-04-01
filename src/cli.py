@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
 import typer
 
@@ -14,6 +15,7 @@ from .infrastructure.crawl_service import Crawl4AICrawlService
 from .infrastructure.events import CompositeEventSink, ConsoleEventSink
 from .infrastructure.llm_client import OpenAILLMClient
 from .infrastructure.tracker_sink import TrackerEventSink
+from .regression import run_regression_matrix
 
 
 app = typer.Typer(help="GenAI weekly report generator (MVP1)")
@@ -27,6 +29,47 @@ def run(
 ):
     """Generate a weekly report from a URL list."""
     asyncio.run(run_pipeline_async(model, temperature, max_concurrency, tracker))
+
+
+@app.command("compare-regression")
+def compare_regression(
+    baseline_artifact: Path = typer.Option(
+        Path("artifacts/run_12-03-2026_105525.json"),
+        help="Historical baseline artifact path.",
+    ),
+    baseline_report: Path = typer.Option(
+        Path("reports/2026-03/12-03-2026_weekly.md"),
+        help="Historical baseline markdown report path.",
+    ),
+    live_input: Path = typer.Option(
+        Path("inputs/2026-04/links_01-04-2026.yaml"),
+        help="Live input YAML path for the current-code rerun.",
+    ),
+    models: str = typer.Option(
+        "gpt-5.4-nano,gpt-5.4-mini",
+        help="Comma-separated model list for current-code replay/live lanes.",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        help="Optional output directory for the regression bundle. Defaults to a temp workspace.",
+    ),
+    max_concurrency: int = typer.Option(3, help="Max simultaneous crawls for live lanes."),
+):
+    """Compare the March 12, 2026 baseline against current replay/live lanes."""
+    model_list = [item.strip() for item in models.split(",") if item.strip()]
+    result = asyncio.run(
+        run_regression_matrix(
+            baseline_artifact_path=baseline_artifact,
+            baseline_report_path=baseline_report,
+            live_input_path=live_input,
+            models=model_list,
+            output_dir=output_dir,
+            max_concurrency=max_concurrency,
+        )
+    )
+    typer.echo(f"Regression bundle: {result.output_dir}")
+    typer.echo(f"JSON summary: {result.json_path}")
+    typer.echo(f"Markdown summary: {result.markdown_path}")
 
 
 async def run_pipeline_async(model: str, temperature: float, max_concurrency: int, tracker: bool = True):
