@@ -6,26 +6,31 @@ from pathlib import Path
 
 import typer
 
-from .llm import OpenAIConfig
 from .application.pipeline import PipelineRequest, run_report_pipeline
-from .config import get_settings
+from .config import get_settings, task_model_routes
 from .crawler import CrawlError
-from .ingest import InputError
 from .infrastructure.crawl_service import Crawl4AICrawlService
 from .infrastructure.events import CompositeEventSink, ConsoleEventSink
 from .infrastructure.llm_client import OpenAILLMClient
 from .infrastructure.tracker_sink import TrackerEventSink
+from .ingest import InputError
+from .llm import OpenAIConfig
 from .regression import run_regression_matrix
 
-
 app = typer.Typer(help="GenAI weekly report generator (MVP1)")
+DEFAULT_BASELINE_ARTIFACT = Path("artifacts/run_12-03-2026_105525.json")
+DEFAULT_BASELINE_REPORT = Path("reports/2026-03/12-03-2026_weekly.md")
+DEFAULT_LIVE_INPUT = Path("inputs/2026-04/links_01-04-2026.yaml")
+
 
 @app.command()
 def run(
-    model: str = typer.Option("gpt-5.4-nano", help="OpenAI model name"),
+    model: str | None = typer.Option(None, help="Optional debug override for all routed tasks."),
     temperature: float = typer.Option(0.2, help="Sampling temperature"),
     max_concurrency: int = typer.Option(3, help="Max simultaneous crawls"),
-    tracker: bool = typer.Option(True, "--tracker/--no-tracker", help="Start the local tracker UI."),
+    tracker: bool = typer.Option(
+        True, "--tracker/--no-tracker", help="Start the local tracker UI."
+    ),
 ):
     """Generate a weekly report from a URL list."""
     asyncio.run(run_pipeline_async(model, temperature, max_concurrency, tracker))
@@ -33,36 +38,30 @@ def run(
 
 @app.command("compare-regression")
 def compare_regression(
-    baseline_artifact: Path = typer.Option(
-        Path("artifacts/run_12-03-2026_105525.json"),
+    baseline_artifact: Path = typer.Option(  # noqa: B008
+        DEFAULT_BASELINE_ARTIFACT,
         help="Historical baseline artifact path.",
     ),
-    baseline_report: Path = typer.Option(
-        Path("reports/2026-03/12-03-2026_weekly.md"),
+    baseline_report: Path = typer.Option(  # noqa: B008
+        DEFAULT_BASELINE_REPORT,
         help="Historical baseline markdown report path.",
     ),
-    live_input: Path = typer.Option(
-        Path("inputs/2026-04/links_01-04-2026.yaml"),
+    live_input: Path = typer.Option(  # noqa: B008
+        DEFAULT_LIVE_INPUT,
         help="Live input YAML path for the current-code rerun.",
     ),
-    models: str = typer.Option(
-        "gpt-5.4-nano,gpt-5.4-mini",
-        help="Comma-separated model list for current-code replay/live lanes.",
-    ),
-    output_dir: Path | None = typer.Option(
+    output_dir: Path | None = typer.Option(  # noqa: B008
         None,
         help="Optional output directory for the regression bundle. Defaults to a temp workspace.",
     ),
     max_concurrency: int = typer.Option(3, help="Max simultaneous crawls for live lanes."),
 ):
-    """Compare the March 12, 2026 baseline against current replay/live lanes."""
-    model_list = [item.strip() for item in models.split(",") if item.strip()]
+    """Compare the March 12, 2026 baseline against routed current-code replay/live lanes."""
     result = asyncio.run(
         run_regression_matrix(
             baseline_artifact_path=baseline_artifact,
             baseline_report_path=baseline_report,
             live_input_path=live_input,
-            models=model_list,
             output_dir=output_dir,
             max_concurrency=max_concurrency,
         )
@@ -72,10 +71,16 @@ def compare_regression(
     typer.echo(f"Markdown summary: {result.markdown_path}")
 
 
-async def run_pipeline_async(model: str, temperature: float, max_concurrency: int, tracker: bool = True):
+async def run_pipeline_async(
+    model: str | None, temperature: float, max_concurrency: int, tracker: bool = True
+):
     settings = get_settings()
+    routed_task_models = task_model_routes(settings)
+    if model is not None:
+        routed_task_models = {task_name: model for task_name in routed_task_models}
     llm_config = OpenAIConfig(
-        model=model,
+        model=model or settings.openai_default_model,
+        task_models=routed_task_models,
         temperature=temperature,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
@@ -108,7 +113,7 @@ async def run_pipeline_async(model: str, temperature: float, max_concurrency: in
         _print_usage_summary(result.metadata.llm_usage)
         return result
     except (InputError, CrawlError) as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc
 
 
 def _print_usage_summary(usage_summary: dict[str, object]) -> None:

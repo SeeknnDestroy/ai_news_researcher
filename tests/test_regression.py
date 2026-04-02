@@ -18,9 +18,7 @@ from src.regression import (
 def _write_debug_input(path: Path, *, title: str, url: str, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"Title: {title}\n"
-        f"URL: {url}\n\n"
-        f"{body}\n",
+        f"Title: {title}\nURL: {url}\n\n{body}\n",
         encoding="utf-8",
     )
 
@@ -75,7 +73,7 @@ def test_replay_crawl_service_reconstructs_items_and_failures(tmp_path: Path):
     assert result.failures[0].reason == "timeout"
 
 
-def test_compare_snapshots_reports_regression_and_heading_deltas():
+def test_compare_snapshots_reports_story_card_and_outline_regressions():
     baseline = RunSnapshot(
         lane_id="baseline_xai",
         mode="historical",
@@ -85,21 +83,25 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
         evaluation_enabled=True,
         crawl_ok_count=2,
         crawl_failures=[],
-        summaries=[
+        story_cards=[
             {
                 "url": "https://example.com/a",
-                "title": "Alpha",
-                "date": "05 March 2026",
-                "date_inferred": False,
+                "story_title_tr": "Alpha",
+                "published_at": "05 March 2026",
+                "published_at_inferred": False,
                 "confidence": 0.9,
             },
             {
                 "url": "https://example.com/b",
-                "title": "Beta",
-                "date": "06 March 2026",
-                "date_inferred": False,
+                "story_title_tr": "Beta",
+                "published_at": "06 March 2026",
+                "published_at_inferred": False,
                 "confidence": 0.8,
             },
+        ],
+        story_units=[
+            {"story_unit_id": "story-a", "primary_url": "https://example.com/a"},
+            {"story_unit_id": "story-b", "primary_url": "https://example.com/b"},
         ],
         excluded=[],
         newsletter_splits=[],
@@ -133,23 +135,24 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
         error=None,
     )
     candidate = RunSnapshot(
-        lane_id="replay_gpt_5_4_nano",
+        lane_id="replay_routed_openai",
         mode="replay",
-        model="gpt-5.4-nano",
+        model="routed_openai",
         family="openai",
         input_urls=["https://example.com/a", "https://example.com/b"],
         evaluation_enabled=True,
         crawl_ok_count=1,
         crawl_failures=[{"url": "https://example.com/b", "reason": "timeout"}],
-        summaries=[
+        story_cards=[
             {
                 "url": "https://example.com/a",
-                "title": "Alpha rewritten",
-                "date": "05 March 2026",
-                "date_inferred": True,
+                "story_title_tr": "Alpha rewritten",
+                "published_at": "05 March 2026",
+                "published_at_inferred": True,
                 "confidence": 0.55,
             }
         ],
+        story_units=[{"story_unit_id": "story-a", "primary_url": "https://example.com/a"}],
         excluded=[{"url": "https://example.com/b", "reason": "timeout", "stage": "crawl"}],
         newsletter_splits=[],
         outline={
@@ -167,7 +170,11 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
                 }
             ],
         },
-        evaluation={"passes_criteria": False, "critique": "needs work", "specific_fixes_required": ["Fix headings"]},
+        evaluation={
+            "passes_criteria": False,
+            "critique": "needs work",
+            "specific_fixes_required": ["Fix headings"],
+        },
         revision_count=1,
         report_text="# Candidate\n\n## 1. Agents\n\n### Alpha heading\n",
         report_sections=["1. Agents"],
@@ -179,14 +186,15 @@ def test_compare_snapshots_reports_regression_and_heading_deltas():
 
     comparison = compare_snapshots(baseline, candidate)
 
-    assert comparison["summary"]["candidate_count"] == 1
+    assert comparison["story_cards"]["candidate_count"] == 1
     assert comparison["crawl"]["failure_delta"] == 1
+    assert comparison["story_cards"]["missing_story_card_urls"] == ["https://example.com/b"]
+    assert comparison["workflow"]["missing_outline_url_count"] == 0
     assert comparison["report"]["removed_article_headings"] == ["Beta heading"]
-    assert comparison["workflow"]["evaluation_pass_changed"] is True
     assert comparison["verdict"]["regressed"] is True
 
 
-def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeypatch):
+def test_run_regression_matrix_writes_routed_outputs(tmp_path: Path, monkeypatch):
     baseline_artifact = tmp_path / "run_12-03-2026_105525.json"
     baseline_report = tmp_path / "12-03-2026_weekly.md"
     live_input = tmp_path / "inputs" / "2026-04" / "links_01-04-2026.yaml"
@@ -209,7 +217,6 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
                         "date_inferred": False,
                         "summary_tr": "Summary",
                         "why_it_matters_tr": "Why",
-                        "tags": ["agentic"],
                         "confidence": 0.9,
                     }
                 ],
@@ -245,11 +252,15 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
         ),
         encoding="utf-8",
     )
-    baseline_report.write_text("# Baseline\n\n## 1. Agents\n\n### Alpha heading\n", encoding="utf-8")
+    baseline_report.write_text(
+        "# Baseline\n\n## 1. Agents\n\n### Alpha heading\n", encoding="utf-8"
+    )
     live_input.parent.mkdir(parents=True, exist_ok=True)
-    live_input.write_text('evaluation: true\nurls:\n  - "https://example.com/a"\n', encoding="utf-8")
+    live_input.write_text(
+        'evaluation: true\nurls:\n  - "https://example.com/a"\n', encoding="utf-8"
+    )
 
-    async def fake_execute_lane(*, lane_id, mode, model, baseline, lane_output_dir, **kwargs):
+    async def fake_execute_lane(*, lane_id, mode, lane_output_dir, **kwargs):
         lane_output_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = lane_output_dir / "artifact.json"
         report_path = lane_output_dir / "report.md"
@@ -258,41 +269,48 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
                 {
                     "input": {
                         "path": str(lane_output_dir / "inputs.yaml"),
-                        "urls": baseline.input_urls,
+                        "urls": ["https://example.com/a"],
                         "evaluation_enabled": True,
                     },
-                    "crawl": {"ok_count": 1, "failure_count": 0, "failures": []},
-                    "summaries": [
+                    "crawl": {
+                        "ok_count": 1,
+                        "failure_count": 0,
+                        "failures": [],
+                    },
+                    "story_cards": [
                         {
                             "url": "https://example.com/a",
-                            "origin_url": "https://example.com/a",
-                            "source_name": "Example",
-                            "title": f"{model} title",
-                            "date": "05 March 2026",
-                            "date_inferred": False,
-                            "summary_tr": "Summary",
-                            "why_it_matters_tr": "Why",
-                            "tags": ["agentic"],
-                            "confidence": 0.8 if model.endswith("nano") else 0.7,
+                            "story_title_tr": f"{mode} title",
+                            "published_at": "05 March 2026",
+                            "published_at_inferred": False,
+                            "confidence": 0.8,
+                        }
+                    ],
+                    "story_units": [
+                        {
+                            "story_unit_id": "story-a",
+                            "primary_url": "https://example.com/a",
+                            "news_urls_included": ["https://example.com/a"],
                         }
                     ],
                     "excluded": [],
                     "newsletter_splits": [],
                     "workflow": {
+                        "theme_plan": {
+                            "report_title": "Routed report",
+                            "themes": [{"theme_name": "1. Agents", "story_unit_ids": ["story-a"]}],
+                        },
                         "outline": {
-                            "report_title": f"{model} report",
-                            "introduction_commentary": "Intro",
+                            "report_title": "Routed report",
                             "themes": [
                                 {
                                     "theme_name": "1. Agents",
-                                    "theme_commentary": "Commentary",
                                     "articles": [
-                                            {
-                                                "heading": "Alpha heading",
-                                                "primary_url": "https://example.com/a",
-                                                "news_urls_included": ["https://example.com/a"],
-                                                "content_plan": "Plan",
-                                            }
+                                        {
+                                            "heading": f"{mode} heading",
+                                            "primary_url": "https://example.com/a",
+                                            "news_urls_included": ["https://example.com/a"],
+                                        }
                                     ],
                                 }
                             ],
@@ -302,25 +320,17 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
                             "specific_fixes_required": [],
                             "passes_criteria": True,
                         },
-                        "critique": "ok",
                         "revision_count": 0,
                         "critique_history": [],
-                    },
-                    "metadata": {
-                        "run_id": lane_id,
-                        "started_at": "2026-04-01T10:00:00",
-                        "stage_timings": {"crawl": 0.1},
-                        "validation_failures": [],
-                        "retries": {"draft_revision": 0},
-                        "fallbacks": [],
-                        "llm_usage": {},
                     },
                 },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        report_path.write_text(f"# {model}\n\n## 1. Agents\n\n### Alpha heading\n", encoding="utf-8")
+        report_path.write_text(
+            f"# {mode}\n\n## 1. Agents\n\n### {mode} heading\n", encoding="utf-8"
+        )
         return lane_output_dir, artifact_path, report_path, None
 
     monkeypatch.setattr("src.regression._execute_lane", fake_execute_lane)
@@ -330,57 +340,37 @@ def test_run_regression_matrix_writes_multimodel_outputs(tmp_path: Path, monkeyp
             baseline_artifact_path=baseline_artifact,
             baseline_report_path=baseline_report,
             live_input_path=live_input,
-            models=["gpt-5.4-nano", "gpt-5.4-mini"],
-            output_dir=tmp_path / "out",
-            max_concurrency=2,
+            output_dir=tmp_path / "bundle",
         )
     )
 
-    assert result.json_path.exists()
-    assert result.markdown_path.exists()
-    assert (tmp_path / "out" / "lanes" / "replay_gpt_5_4_nano").exists()
-    assert (tmp_path / "out" / "lanes" / "replay_gpt_5_4_mini").exists()
-    assert (tmp_path / "out" / "lanes" / "live_gpt_5_4_nano").exists()
-    assert (tmp_path / "out" / "lanes" / "live_gpt_5_4_mini").exists()
-
     payload = json.loads(result.json_path.read_text(encoding="utf-8"))
-    assert "nano_vs_mini_replay_delta" in payload["cross_model_deltas"]
-    assert "historical_xai_vs_nano_delta" in payload["cross_model_deltas"]
+    assert result.output_dir == tmp_path / "bundle"
+    assert len(payload["lanes"]) == 2
+    assert payload["lanes"][0]["model"] == "routed_openai"
+    assert payload["baseline"]["lane_id"] == "historical_xai"
 
 
-def test_compare_regression_cli_invokes_harness(tmp_path: Path, monkeypatch):
-    runner = CliRunner()
+def test_compare_regression_cli_writes_bundle(tmp_path: Path, monkeypatch):
     output_dir = tmp_path / "bundle"
+
+    class FakeResult:
+        def __init__(self) -> None:
+            self.output_dir = output_dir
+            self.json_path = output_dir / "regression_summary.json"
+            self.markdown_path = output_dir / "regression_summary.md"
 
     async def fake_run_regression_matrix(**kwargs):
         del kwargs
         output_dir.mkdir(parents=True, exist_ok=True)
-        json_path = output_dir / "regression_summary.json"
-        markdown_path = output_dir / "regression_summary.md"
-        json_path.write_text("{}", encoding="utf-8")
-        markdown_path.write_text("# Summary\n", encoding="utf-8")
-        result = type("Result", (), {})()
-        result.output_dir = output_dir
-        result.json_path = json_path
-        result.markdown_path = markdown_path
-        return result
+        (output_dir / "regression_summary.json").write_text("{}", encoding="utf-8")
+        (output_dir / "regression_summary.md").write_text("# Summary", encoding="utf-8")
+        return FakeResult()
 
     monkeypatch.setattr("src.cli.run_regression_matrix", fake_run_regression_matrix)
 
-    result = runner.invoke(
-        app,
-        [
-            "compare-regression",
-            "--baseline-artifact",
-            str(tmp_path / "baseline.json"),
-            "--baseline-report",
-            str(tmp_path / "baseline.md"),
-            "--live-input",
-            str(tmp_path / "live.yaml"),
-            "--output-dir",
-            str(output_dir),
-        ],
-    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["compare-regression", "--output-dir", str(output_dir)])
 
     assert result.exit_code == 0
     assert f"Regression bundle: {output_dir}" in result.stdout

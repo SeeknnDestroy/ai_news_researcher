@@ -11,10 +11,10 @@ from pathlib import Path
 from .application.pipeline import PipelineRequest, run_report_pipeline
 from .config import get_settings
 from .domain.models import CrawlFailure, CrawlItem, CrawlStageResult
-from .ingest import load_input
 from .infrastructure.crawl_service import Crawl4AICrawlService
 from .infrastructure.events import NullEventSink
 from .infrastructure.llm_client import OpenAILLMClient
+from .ingest import load_input
 from .llm import OpenAIConfig
 from .storage_paths import dated_input_path
 
@@ -29,7 +29,8 @@ class RunSnapshot:
     evaluation_enabled: bool
     crawl_ok_count: int
     crawl_failures: list[dict[str, str]]
-    summaries: list[dict[str, object]]
+    story_cards: list[dict[str, object]]
+    story_units: list[dict[str, object]]
     excluded: list[dict[str, object]]
     newsletter_splits: list[dict[str, object]]
     outline: dict[str, object]
@@ -51,7 +52,6 @@ class RegressionMatrixResult:
     baseline: RunSnapshot
     lanes: list[dict[str, object]]
     verdicts: dict[str, bool]
-    cross_model_deltas: dict[str, dict[str, object]]
 
 
 class ReplayCrawlService:
@@ -65,7 +65,7 @@ class ReplayCrawlService:
         self._failures_by_url = failures_by_url
 
     @classmethod
-    def from_paths(cls, artifact_path: str | Path, debug_dir: str | Path) -> "ReplayCrawlService":
+    def from_paths(cls, artifact_path: str | Path, debug_dir: str | Path) -> ReplayCrawlService:
         payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
         debug_path = Path(debug_dir)
         items_by_url = _load_replay_items(debug_path)
@@ -98,7 +98,6 @@ async def run_regression_matrix(
     baseline_artifact_path: str | Path,
     baseline_report_path: str | Path,
     live_input_path: str | Path,
-    models: list[str],
     output_dir: str | Path | None = None,
     max_concurrency: int = 3,
 ) -> RegressionMatrixResult:
@@ -106,7 +105,6 @@ async def run_regression_matrix(
     baseline_report = Path(baseline_report_path)
     live_input = Path(live_input_path)
 
-    normalized_models = _normalize_models(models)
     bundle_dir = _resolve_output_dir(output_dir)
     lanes_root = bundle_dir / "lanes"
     lanes_root.mkdir(parents=True, exist_ok=True)
@@ -124,58 +122,57 @@ async def run_regression_matrix(
     replay_target_date = _parse_date_from_path(baseline_report, prefix="", suffix="_weekly.md")
     live_target_date = _parse_date_from_path(live_input, prefix="links_", suffix=".yaml")
     live_payload = _load_input_payload(live_input)
-    replay_debug_dir = baseline_artifact.parent / "debug_inputs" / _run_id_from_artifact_path(baseline_artifact)
+    replay_debug_dir = (
+        baseline_artifact.parent / "debug_inputs" / _run_id_from_artifact_path(baseline_artifact)
+    )
 
     lanes: list[dict[str, object]] = []
     for mode in ("replay", "live"):
-        for model in normalized_models:
-            lane_id = f"{mode}_{_safe_model_slug(model)}"
-            lane_output_dir = lanes_root / lane_id
-            lane_target_date = replay_target_date if mode == "replay" else live_target_date
-            lane_urls = baseline.input_urls if mode == "replay" else list(live_payload["urls"])
-            lane_evaluation = baseline.evaluation_enabled if mode == "replay" else bool(live_payload["evaluation"])
-            lane_workspace, artifact_path, report_path, error = await _execute_lane(
-                lane_id=lane_id,
-                mode=mode,
-                model=model,
-                baseline=baseline,
-                lane_output_dir=lane_output_dir,
-                target_date=lane_target_date,
-                urls=lane_urls,
-                evaluation_enabled=lane_evaluation,
-                max_concurrency=max_concurrency,
-                baseline_artifact_path=baseline_artifact,
-                replay_debug_dir=replay_debug_dir,
-            )
-            snapshot = _build_lane_snapshot(
-                lane_id=lane_id,
-                mode=mode,
-                model=model,
-                artifact_path=artifact_path,
-                report_path=report_path,
-                family="openai",
-                input_urls=lane_urls,
-                evaluation_enabled=lane_evaluation,
-                error=error,
-            )
-            comparison = compare_snapshots(baseline, snapshot)
-            lanes.append(
-                {
-                    "lane_id": lane_id,
-                    "mode": mode,
-                    "model": model,
-                    "family": snapshot.family,
-                    "workspace_dir": str(lane_workspace),
-                    "artifact_path": str(artifact_path) if artifact_path else None,
-                    "report_path": str(report_path) if report_path else None,
-                    "error": error,
-                    "snapshot": _snapshot_to_dict(snapshot),
-                    "comparison": comparison,
-                }
-            )
+        lane_id = f"{mode}_routed_openai"
+        lane_output_dir = lanes_root / lane_id
+        lane_target_date = replay_target_date if mode == "replay" else live_target_date
+        lane_urls = baseline.input_urls if mode == "replay" else list(live_payload["urls"])
+        lane_evaluation = (
+            baseline.evaluation_enabled if mode == "replay" else bool(live_payload["evaluation"])
+        )
+        lane_workspace, artifact_path, report_path, error = await _execute_lane(
+            lane_id=lane_id,
+            mode=mode,
+            lane_output_dir=lane_output_dir,
+            target_date=lane_target_date,
+            urls=lane_urls,
+            evaluation_enabled=lane_evaluation,
+            max_concurrency=max_concurrency,
+            baseline_artifact_path=baseline_artifact,
+            replay_debug_dir=replay_debug_dir,
+        )
+        snapshot = _build_lane_snapshot(
+            lane_id=lane_id,
+            mode=mode,
+            artifact_path=artifact_path,
+            report_path=report_path,
+            family="openai",
+            input_urls=lane_urls,
+            evaluation_enabled=lane_evaluation,
+            error=error,
+        )
+        comparison = compare_snapshots(baseline, snapshot)
+        lanes.append(
+            {
+                "lane_id": lane_id,
+                "mode": mode,
+                "model": snapshot.model,
+                "family": snapshot.family,
+                "workspace_dir": str(lane_workspace),
+                "artifact_path": str(artifact_path) if artifact_path else None,
+                "report_path": str(report_path) if report_path else None,
+                "error": error,
+                "snapshot": _snapshot_to_dict(snapshot),
+                "comparison": comparison,
+            }
+        )
 
-    cross_model_deltas = _build_cross_model_deltas(baseline, lanes)
-    verdicts = _build_overall_verdicts(lanes, cross_model_deltas)
+    verdicts = _build_overall_verdicts(lanes)
     json_path = bundle_dir / "regression_summary.json"
     markdown_path = bundle_dir / "regression_summary.md"
 
@@ -183,7 +180,6 @@ async def run_regression_matrix(
         "baseline": _snapshot_to_dict(baseline),
         "lanes": lanes,
         "verdicts": verdicts,
-        "cross_model_deltas": cross_model_deltas,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.write_text(_render_markdown_summary(payload), encoding="utf-8")
@@ -195,7 +191,6 @@ async def run_regression_matrix(
         baseline=baseline,
         lanes=lanes,
         verdicts=verdicts,
-        cross_model_deltas=cross_model_deltas,
     )
 
 
@@ -225,6 +220,8 @@ def load_run_snapshot(
 
     report_sections = _extract_report_sections(report_text)
     article_headings = _extract_article_headings(report_text, outline)
+    story_cards = _extract_story_cards(payload)
+    story_units = _extract_story_units(payload, outline)
     return RunSnapshot(
         lane_id=lane_id,
         mode=mode,
@@ -234,7 +231,8 @@ def load_run_snapshot(
         evaluation_enabled=evaluation_enabled,
         crawl_ok_count=crawl_ok_count,
         crawl_failures=crawl_failures,
-        summaries=[dict(item) for item in payload.get("summaries") or []],
+        story_cards=story_cards,
+        story_units=story_units,
         excluded=[dict(item) for item in payload.get("excluded") or []],
         newsletter_splits=[dict(item) for item in payload.get("newsletter_splits") or []],
         outline=outline,
@@ -254,19 +252,27 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
     candidate_input = set(candidate.input_urls)
     baseline_failures = {item["url"]: item["reason"] for item in baseline.crawl_failures}
     candidate_failures = {item["url"]: item["reason"] for item in candidate.crawl_failures}
-    baseline_summaries = {str(item.get("url")): item for item in baseline.summaries}
-    candidate_summaries = {str(item.get("url")): item for item in candidate.summaries}
-    baseline_excluded_stage_counts = dict(Counter(str(item.get("stage", "unknown")) for item in baseline.excluded))
-    candidate_excluded_stage_counts = dict(Counter(str(item.get("stage", "unknown")) for item in candidate.excluded))
+    baseline_cards = {str(item.get("url")): item for item in baseline.story_cards}
+    candidate_cards = {str(item.get("url")): item for item in candidate.story_cards}
+    baseline_excluded_stage_counts = dict(
+        Counter(str(item.get("stage", "unknown")) for item in baseline.excluded)
+    )
+    candidate_excluded_stage_counts = dict(
+        Counter(str(item.get("stage", "unknown")) for item in candidate.excluded)
+    )
 
     title_changes = []
     date_changes = []
     confidence_deltas = []
-    for url in sorted(baseline_summaries.keys() & candidate_summaries.keys()):
-        baseline_item = baseline_summaries[url]
-        candidate_item = candidate_summaries[url]
-        baseline_title = str(baseline_item.get("title") or "")
-        candidate_title = str(candidate_item.get("title") or "")
+    for url in sorted(baseline_cards.keys() & candidate_cards.keys()):
+        baseline_item = baseline_cards[url]
+        candidate_item = candidate_cards[url]
+        baseline_title = str(
+            baseline_item.get("story_title_tr") or baseline_item.get("title") or ""
+        )
+        candidate_title = str(
+            candidate_item.get("story_title_tr") or candidate_item.get("title") or ""
+        )
         if baseline_title != candidate_title:
             title_changes.append(
                 {
@@ -276,10 +282,14 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
                 }
             )
 
-        baseline_date = str(baseline_item.get("date") or "")
-        candidate_date = str(candidate_item.get("date") or "")
-        baseline_inferred = bool(baseline_item.get("date_inferred"))
-        candidate_inferred = bool(candidate_item.get("date_inferred"))
+        baseline_date = str(baseline_item.get("published_at") or baseline_item.get("date") or "")
+        candidate_date = str(candidate_item.get("published_at") or candidate_item.get("date") or "")
+        baseline_inferred = bool(
+            baseline_item.get("published_at_inferred", baseline_item.get("date_inferred"))
+        )
+        candidate_inferred = bool(
+            candidate_item.get("published_at_inferred", candidate_item.get("date_inferred"))
+        )
         if baseline_date != candidate_date or baseline_inferred != candidate_inferred:
             date_changes.append(
                 {
@@ -305,8 +315,9 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
 
     baseline_themes = _extract_theme_names(baseline.outline)
     candidate_themes = _extract_theme_names(candidate.outline)
-    baseline_coverage = _extract_outline_coverage(baseline.outline)
-    candidate_coverage = _extract_outline_coverage(candidate.outline)
+    candidate_outline_urls = _extract_outline_urls(candidate.outline)
+    candidate_duplicate_outline_urls = _duplicate_urls(candidate_outline_urls)
+    candidate_missing_outline_urls = sorted(set(candidate_cards) - set(candidate_outline_urls))
     missing_sections = sorted(set(baseline.report_sections) - set(candidate.report_sections))
     removed_headings = sorted(set(baseline.article_headings) - set(candidate.article_headings))
     added_headings = sorted(set(candidate.article_headings) - set(baseline.article_headings))
@@ -320,14 +331,20 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
         regression_signals.append("crawl ok count dropped")
     if len(candidate.crawl_failures) > len(baseline.crawl_failures):
         regression_signals.append("crawl failures increased")
-    if len(candidate.summaries) < len(baseline.summaries):
-        regression_signals.append("summary count dropped")
+    if len(candidate.story_cards) < len(baseline.story_cards):
+        regression_signals.append("story card count dropped")
     if len(candidate.excluded) > len(baseline.excluded):
         regression_signals.append("excluded count increased")
     if candidate_eval_passes is False and baseline_eval_passes is True:
         regression_signals.append("evaluation no longer passes")
     if len(candidate_themes) < len(baseline_themes):
         regression_signals.append("theme count dropped")
+    if len(candidate.story_units) < len(baseline.story_units):
+        regression_signals.append("story unit count dropped")
+    if candidate_duplicate_outline_urls:
+        regression_signals.append("duplicate outline urls present")
+    if candidate_missing_outline_urls:
+        regression_signals.append("outline missing story card urls")
     if missing_sections:
         regression_signals.append("baseline report sections missing")
     if removed_headings:
@@ -348,17 +365,19 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
             "failure_delta": len(candidate.crawl_failures) - len(baseline.crawl_failures),
             "new_failed_urls": sorted(set(candidate_failures) - set(baseline_failures)),
             "resolved_failed_urls": sorted(set(baseline_failures) - set(candidate_failures)),
-            "failure_reason_changes": _failure_reason_changes(baseline_failures, candidate_failures),
+            "failure_reason_changes": _failure_reason_changes(
+                baseline_failures, candidate_failures
+            ),
         },
-        "summary": {
-            "baseline_count": len(baseline.summaries),
-            "candidate_count": len(candidate.summaries),
+        "story_cards": {
+            "baseline_count": len(baseline.story_cards),
+            "candidate_count": len(candidate.story_cards),
             "baseline_excluded_count": len(baseline.excluded),
             "candidate_excluded_count": len(candidate.excluded),
             "baseline_excluded_stage_counts": baseline_excluded_stage_counts,
             "candidate_excluded_stage_counts": candidate_excluded_stage_counts,
-            "missing_summary_urls": sorted(set(baseline_summaries) - set(candidate_summaries)),
-            "extra_summary_urls": sorted(set(candidate_summaries) - set(baseline_summaries)),
+            "missing_story_card_urls": sorted(set(baseline_cards) - set(candidate_cards)),
+            "extra_story_card_urls": sorted(set(candidate_cards) - set(baseline_cards)),
             "title_changes": title_changes,
             "date_changes": date_changes,
             "confidence_deltas": confidence_deltas,
@@ -366,22 +385,23 @@ def compare_snapshots(baseline: RunSnapshot, candidate: RunSnapshot) -> dict[str
         "workflow": {
             "baseline_theme_count": len(baseline_themes),
             "candidate_theme_count": len(candidate_themes),
-            "baseline_themes": baseline_themes,
-            "candidate_themes": candidate_themes,
-            "baseline_article_coverage": baseline_coverage,
-            "candidate_article_coverage": candidate_coverage,
+            "baseline_story_unit_count": len(baseline.story_units),
+            "candidate_story_unit_count": len(candidate.story_units),
             "baseline_evaluation_passes": baseline_eval_passes,
             "candidate_evaluation_passes": candidate_eval_passes,
             "evaluation_pass_changed": baseline_eval_passes != candidate_eval_passes,
             "baseline_revision_count": baseline.revision_count,
             "candidate_revision_count": candidate.revision_count,
-            "critique_present": bool(candidate.evaluation.get("critique")),
+            "duplicate_outline_url_count": len(candidate_duplicate_outline_urls),
+            "missing_outline_url_count": len(candidate_missing_outline_urls),
         },
         "report": {
             "baseline_length": len(baseline.report_text),
             "candidate_length": len(candidate.report_text),
-            "baseline_heading_count": len(baseline.report_sections) + len(baseline.article_headings),
-            "candidate_heading_count": len(candidate.report_sections) + len(candidate.article_headings),
+            "baseline_heading_count": len(baseline.report_sections)
+            + len(baseline.article_headings),
+            "candidate_heading_count": len(candidate.report_sections)
+            + len(candidate.article_headings),
             "missing_baseline_sections": missing_sections,
             "removed_article_headings": removed_headings,
             "added_article_headings": added_headings,
@@ -397,8 +417,6 @@ async def _execute_lane(
     *,
     lane_id: str,
     mode: str,
-    model: str,
-    baseline: RunSnapshot,
     lane_output_dir: Path,
     target_date: date,
     urls: list[str],
@@ -414,8 +432,6 @@ async def _execute_lane(
 
     settings = get_settings()
     llm_config = OpenAIConfig(
-        model=model,
-        temperature=settings.openai_temperature,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         timeout_s=settings.openai_timeout_s,
@@ -444,7 +460,7 @@ async def _execute_lane(
             ),
             event_sink=NullEventSink(),
         )
-    except BaseException as exc:  # pragma: no cover - exercised via harness failure handling
+    except BaseException as exc:  # pragma: no cover - exercised in failure tests
         return lane_output_dir, None, None, str(exc)
 
     artifact_path = result.persistence.artifact_path
@@ -456,7 +472,6 @@ def _build_lane_snapshot(
     *,
     lane_id: str,
     mode: str,
-    model: str,
     artifact_path: Path | None,
     report_path: Path | None,
     family: str,
@@ -468,13 +483,14 @@ def _build_lane_snapshot(
         return RunSnapshot(
             lane_id=lane_id,
             mode=mode,
-            model=model,
+            model="routed_openai",
             family=family,
             input_urls=input_urls,
             evaluation_enabled=evaluation_enabled,
             crawl_ok_count=0,
             crawl_failures=[],
-            summaries=[],
+            story_cards=[],
+            story_units=[],
             excluded=[],
             newsletter_splits=[],
             outline={},
@@ -493,7 +509,7 @@ def _build_lane_snapshot(
         report_path=report_path,
         lane_id=lane_id,
         mode=mode,
-        model=model,
+        model="routed_openai",
         family=family,
         error=error,
     )
@@ -504,25 +520,7 @@ def _resolve_output_dir(output_dir: str | Path | None) -> Path:
         resolved_path = Path(output_dir)
         resolved_path.mkdir(parents=True, exist_ok=True)
         return resolved_path
-
-    temporary_path = Path(tempfile.mkdtemp(prefix="ai-news-regression-"))
-    return temporary_path
-
-
-def _normalize_models(models: list[str]) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in models:
-        text = str(item).strip()
-        if not text:
-            continue
-        if text in seen:
-            continue
-        seen.add(text)
-        normalized.append(text)
-    if normalized:
-        return normalized
-    return ["gpt-5.4-nano", "gpt-5.4-mini"]
+    return Path(tempfile.mkdtemp(prefix="ai-news-regression-"))
 
 
 def _load_input_payload(path: Path) -> dict[str, object]:
@@ -533,7 +531,9 @@ def _load_input_payload(path: Path) -> dict[str, object]:
     }
 
 
-def _extract_crawl_metrics(payload: dict[str, object], input_urls: list[str]) -> tuple[int, list[dict[str, str]]]:
+def _extract_crawl_metrics(
+    payload: dict[str, object], input_urls: list[str]
+) -> tuple[int, list[dict[str, str]]]:
     crawl_payload = payload.get("crawl")
     if isinstance(crawl_payload, dict):
         ok_count = int(crawl_payload.get("ok_count") or 0)
@@ -549,6 +549,57 @@ def _extract_crawl_metrics(payload: dict[str, object], input_urls: list[str]) ->
     ]
     ok_count = max(0, len(input_urls) - len(failures))
     return ok_count, failures
+
+
+def _extract_story_cards(payload: dict[str, object]) -> list[dict[str, object]]:
+    if payload.get("story_cards"):
+        return [dict(item) for item in payload.get("story_cards") or []]
+
+    return [
+        {
+            "url": item.get("url"),
+            "origin_url": item.get("origin_url"),
+            "source_name": item.get("source_name"),
+            "title_raw": item.get("title"),
+            "published_at": item.get("date"),
+            "published_at_inferred": item.get("date_inferred"),
+            "story_title_tr": item.get("title"),
+            "story_type": "legacy_summary",
+            "key_facts": [item.get("summary_tr")] if item.get("summary_tr") else [],
+            "must_keep_entities": [],
+            "must_keep_facts": [item.get("summary_tr")] if item.get("summary_tr") else [],
+            "why_it_matters_tr": item.get("why_it_matters_tr"),
+            "technical_relevance": 0.0,
+            "strategic_relevance": 0.0,
+            "confidence": item.get("confidence", 0.0),
+        }
+        for item in payload.get("summaries") or []
+    ]
+
+
+def _extract_story_units(
+    payload: dict[str, object], outline: dict[str, object]
+) -> list[dict[str, object]]:
+    if payload.get("story_units"):
+        return [dict(item) for item in payload.get("story_units") or []]
+
+    story_units: list[dict[str, object]] = []
+    for theme in outline.get("themes") or []:
+        if not isinstance(theme, dict):
+            continue
+        for article in theme.get("articles") or []:
+            if not isinstance(article, dict):
+                continue
+            story_units.append(
+                {
+                    "story_unit_id": article.get("primary_url"),
+                    "primary_url": article.get("primary_url"),
+                    "supporting_url": None,
+                    "news_urls_included": list(article.get("news_urls_included") or []),
+                    "canonical_title": article.get("heading"),
+                }
+            )
+    return story_units
 
 
 def _extract_outline(payload: dict[str, object]) -> dict[str, object]:
@@ -598,19 +649,17 @@ def _extract_revision_count(payload: dict[str, object]) -> int:
 
 
 def _extract_report_sections(report_text: str) -> list[str]:
-    sections: list[str] = []
-    for line in report_text.splitlines():
-        if not line.startswith("## "):
-            continue
-        sections.append(_clean_heading_text(line[3:]))
-    return sections
+    return [
+        _clean_heading_text(line[3:]) for line in report_text.splitlines() if line.startswith("## ")
+    ]
 
 
 def _extract_article_headings(report_text: str, outline: dict[str, object]) -> list[str]:
-    headings = []
-    for line in report_text.splitlines():
-        if line.startswith("### "):
-            headings.append(_clean_heading_text(line[4:]))
+    headings = [
+        _clean_heading_text(line[4:])
+        for line in report_text.splitlines()
+        if line.startswith("### ")
+    ]
     if headings:
         return headings
 
@@ -627,150 +676,70 @@ def _extract_article_headings(report_text: str, outline: dict[str, object]) -> l
     return outline_headings
 
 
-def _failure_reason_changes(
-    baseline_failures: dict[str, str],
-    candidate_failures: dict[str, str],
-) -> list[dict[str, str]]:
-    changed: list[dict[str, str]] = []
-    for url in sorted(set(baseline_failures) & set(candidate_failures)):
-        baseline_reason = baseline_failures[url]
-        candidate_reason = candidate_failures[url]
-        if baseline_reason == candidate_reason:
-            continue
-        changed.append(
-            {
-                "url": url,
-                "baseline_reason": baseline_reason,
-                "candidate_reason": candidate_reason,
-            }
-        )
-    return changed
-
-
 def _extract_theme_names(outline: dict[str, object]) -> list[str]:
     names: list[str] = []
     for theme in outline.get("themes") or []:
         if not isinstance(theme, dict):
             continue
         name = str(theme.get("theme_name") or "").strip()
-        if not name:
-            continue
-        names.append(name)
+        if name:
+            names.append(name)
     return names
 
 
-def _extract_outline_coverage(outline: dict[str, object]) -> dict[str, int]:
-    coverage: dict[str, int] = {}
+def _extract_outline_urls(outline: dict[str, object]) -> list[str]:
+    urls: list[str] = []
     for theme in outline.get("themes") or []:
         if not isinstance(theme, dict):
             continue
-        theme_name = str(theme.get("theme_name") or "").strip()
-        if not theme_name:
-            continue
-        article_count = 0
-        url_count = 0
         for article in theme.get("articles") or []:
             if not isinstance(article, dict):
                 continue
-            article_count += 1
-            url_count += len(article.get("news_urls_included") or [])
-        coverage[theme_name] = url_count if url_count else article_count
-    return coverage
+            urls.extend(
+                str(url).strip()
+                for url in article.get("news_urls_included") or []
+                if str(url).strip()
+            )
+    return urls
 
 
-def _build_cross_model_deltas(
-    baseline: RunSnapshot,
-    lanes: list[dict[str, object]],
-) -> dict[str, dict[str, object]]:
-    lookup = {(lane["mode"], lane["model"]): lane for lane in lanes}
-    replay_nano = lookup.get(("replay", "gpt-5.4-nano"))
-    replay_mini = lookup.get(("replay", "gpt-5.4-mini"))
-    live_nano = lookup.get(("live", "gpt-5.4-nano"))
-    live_mini = lookup.get(("live", "gpt-5.4-mini"))
-
-    deltas = {
-        "nano_vs_mini_replay_delta": _lane_pair_delta(replay_nano, replay_mini),
-        "nano_vs_mini_live_delta": _lane_pair_delta(live_nano, live_mini),
-        "historical_xai_vs_nano_delta": _baseline_to_lane_delta(baseline, replay_nano or live_nano),
-        "historical_xai_vs_mini_delta": _baseline_to_lane_delta(baseline, replay_mini or live_mini),
-    }
-    return deltas
+def _duplicate_urls(urls: list[str]) -> list[str]:
+    counts = Counter(urls)
+    return sorted(url for url, count in counts.items() if count > 1)
 
 
-def _lane_pair_delta(
-    left_lane: dict[str, object] | None,
-    right_lane: dict[str, object] | None,
-) -> dict[str, object]:
-    if left_lane is None or right_lane is None:
-        return {"available": False}
+def _failure_reason_changes(
+    baseline_failures: dict[str, str],
+    candidate_failures: dict[str, str],
+) -> list[dict[str, str]]:
+    changed: list[dict[str, str]] = []
+    for url in sorted(set(baseline_failures) & set(candidate_failures)):
+        if baseline_failures[url] == candidate_failures[url]:
+            continue
+        changed.append(
+            {
+                "url": url,
+                "baseline_reason": baseline_failures[url],
+                "candidate_reason": candidate_failures[url],
+            }
+        )
+    return changed
 
-    left_snapshot = left_lane["snapshot"]
-    right_snapshot = right_lane["snapshot"]
-    left_comparison = left_lane["comparison"]
-    right_comparison = right_lane["comparison"]
+
+def _build_overall_verdicts(lanes: list[dict[str, object]]) -> dict[str, bool]:
+    lookup = {lane["mode"]: lane for lane in lanes}
+    replay_regressed = _lane_regressed(lookup.get("replay"))
+    live_regressed = _lane_regressed(lookup.get("live"))
+    likely_downstream = replay_regressed
+    likely_crawl = live_regressed and not replay_regressed
+    requires_manual_review = (replay_regressed and live_regressed) or not (
+        likely_downstream or likely_crawl
+    )
     return {
-        "available": True,
-        "left_model": left_lane["model"],
-        "right_model": right_lane["model"],
-        "summary_count_delta": int(left_comparison["summary"]["candidate_count"]) - int(right_comparison["summary"]["candidate_count"]),
-        "excluded_count_delta": int(left_comparison["summary"]["candidate_excluded_count"]) - int(right_comparison["summary"]["candidate_excluded_count"]),
-        "theme_count_delta": int(left_comparison["workflow"]["candidate_theme_count"]) - int(right_comparison["workflow"]["candidate_theme_count"]),
-        "report_length_delta": int(left_comparison["report"]["candidate_length"]) - int(right_comparison["report"]["candidate_length"]),
-        "heading_count_delta": int(left_comparison["report"]["candidate_heading_count"]) - int(right_comparison["report"]["candidate_heading_count"]),
-        "regression_verdict_diff": bool(left_comparison["verdict"]["regressed"]) != bool(right_comparison["verdict"]["regressed"]),
-        "confidence_count_delta": len(left_snapshot["summaries"]) - len(right_snapshot["summaries"]),
-    }
-
-
-def _baseline_to_lane_delta(
-    baseline: RunSnapshot,
-    lane: dict[str, object] | None,
-) -> dict[str, object]:
-    if lane is None:
-        return {"available": False}
-
-    snapshot = lane["snapshot"]
-    comparison = lane["comparison"]
-    return {
-        "available": True,
-        "baseline_model": baseline.model,
-        "candidate_model": lane["model"],
-        "summary_count_delta": int(comparison["summary"]["candidate_count"]) - len(baseline.summaries),
-        "excluded_count_delta": int(comparison["summary"]["candidate_excluded_count"]) - len(baseline.excluded),
-        "theme_count_delta": int(comparison["workflow"]["candidate_theme_count"]) - len(_extract_theme_names(baseline.outline)),
-        "report_length_delta": int(comparison["report"]["candidate_length"]) - len(baseline.report_text),
-        "heading_count_delta": int(comparison["report"]["candidate_heading_count"]) - (len(baseline.report_sections) + len(baseline.article_headings)),
-        "regressed": bool(comparison["verdict"]["regressed"]),
-        "lane_mode": lane["mode"],
-        "candidate_summary_count": len(snapshot["summaries"]),
-    }
-
-
-def _build_overall_verdicts(
-    lanes: list[dict[str, object]],
-    cross_model_deltas: dict[str, dict[str, object]],
-) -> dict[str, bool]:
-    lookup = {(lane["mode"], lane["model"]): lane for lane in lanes}
-    replay_nano = _lane_regressed(lookup.get(("replay", "gpt-5.4-nano")))
-    replay_mini = _lane_regressed(lookup.get(("replay", "gpt-5.4-mini")))
-    live_nano = _lane_regressed(lookup.get(("live", "gpt-5.4-nano")))
-    live_mini = _lane_regressed(lookup.get(("live", "gpt-5.4-mini")))
-
-    likely_downstream = replay_nano and replay_mini
-    likely_crawl = (live_nano or live_mini) and not likely_downstream
-    replay_pair = cross_model_deltas.get("nano_vs_mini_replay_delta") or {}
-    live_pair = cross_model_deltas.get("nano_vs_mini_live_delta") or {}
-    model_sensitive = bool(replay_pair.get("regression_verdict_diff")) or bool(live_pair.get("regression_verdict_diff"))
-    requires_manual_review = not (likely_downstream or likely_crawl) or (likely_downstream and likely_crawl) or model_sensitive
-
-    return {
-        "replay_regressed_nano": replay_nano,
-        "replay_regressed_mini": replay_mini,
-        "live_regressed_nano": live_nano,
-        "live_regressed_mini": live_mini,
+        "replay_regressed": replay_regressed,
+        "live_regressed": live_regressed,
         "likely_crawl_regression": likely_crawl,
         "likely_downstream_regression": likely_downstream,
-        "model_sensitive_regression": model_sensitive,
         "requires_manual_review": requires_manual_review,
     }
 
@@ -787,7 +756,6 @@ def _render_markdown_summary(payload: dict[str, object]) -> str:
     baseline = payload["baseline"]
     lanes = payload["lanes"]
     verdicts = payload["verdicts"]
-    cross_model_deltas = payload["cross_model_deltas"]
 
     lines = [
         "# Regression Summary",
@@ -806,7 +774,8 @@ def _render_markdown_summary(payload: dict[str, object]) -> str:
             f"- Lane: `{baseline['lane_id']}`",
             f"- Model family: `{baseline['family']}`",
             f"- Input URLs: `{len(baseline['input_urls'])}`",
-            f"- Summaries: `{len(baseline['summaries'])}`",
+            f"- Story cards: `{len(baseline['story_cards'])}`",
+            f"- Story units: `{len(baseline['story_units'])}`",
             f"- Themes: `{len(_extract_theme_names(baseline['outline']))}`",
         ]
     )
@@ -822,24 +791,20 @@ def _render_markdown_summary(payload: dict[str, object]) -> str:
                 f"- Model: `{lane['model']}`",
                 f"- Regressed: `{comparison['verdict']['regressed']}`",
                 f"- Signals: `{', '.join(comparison['verdict']['signals']) or 'none'}`",
-                f"- Summary count: `{comparison['summary']['candidate_count']}` vs baseline `{comparison['summary']['baseline_count']}`",
-                f"- Excluded count: `{comparison['summary']['candidate_excluded_count']}` vs baseline `{comparison['summary']['baseline_excluded_count']}`",
-                f"- Theme count: `{comparison['workflow']['candidate_theme_count']}` vs baseline `{comparison['workflow']['baseline_theme_count']}`",
-                f"- Missing sections: `{', '.join(comparison['report']['missing_baseline_sections']) or 'none'}`",
-                f"- Removed headings: `{', '.join(comparison['report']['removed_article_headings']) or 'none'}`",
+                "- Story card count: "
+                f"`{comparison['story_cards']['candidate_count']}` "
+                f"vs baseline `{comparison['story_cards']['baseline_count']}`",
+                "- Story unit count: "
+                f"`{comparison['workflow']['candidate_story_unit_count']}` "
+                f"vs baseline `{comparison['workflow']['baseline_story_unit_count']}`",
+                "- Duplicate outline URLs: "
+                f"`{comparison['workflow']['duplicate_outline_url_count']}`",
+                "- Missing outline URLs: "
+                f"`{comparison['workflow']['missing_outline_url_count']}`",
+                "- Missing sections: "
+                f"`{', '.join(comparison['report']['missing_baseline_sections']) or 'none'}`",
             ]
         )
-
-    lines.extend(
-        [
-            "",
-            "## Cross Model Deltas",
-            "",
-        ]
-    )
-    for key, value in cross_model_deltas.items():
-        rendered_value = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        lines.append(f"- `{key}`: `{rendered_value}`")
 
     lines.append("")
     return "\n".join(lines)
@@ -881,7 +846,9 @@ def _parse_debug_input(path: Path) -> CrawlItem | None:
 
 
 def _extract_failure_map(payload: dict[str, object]) -> dict[str, str]:
-    _, failures = _extract_crawl_metrics(payload, [str(url) for url in (payload.get("input") or {}).get("urls") or []])
+    _, failures = _extract_crawl_metrics(
+        payload, [str(url) for url in (payload.get("input") or {}).get("urls") or []]
+    )
     return {item["url"]: item["reason"] for item in failures}
 
 
@@ -908,10 +875,6 @@ def _run_id_from_artifact_path(path: Path) -> str:
     if name.startswith("run_"):
         return name[4:]
     return name
-
-
-def _safe_model_slug(model: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", model).strip("_").lower()
 
 
 def _render_input_yaml(urls: list[str], evaluation_enabled: bool) -> str:
