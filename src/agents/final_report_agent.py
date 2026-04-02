@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from ..application.report_tasks import render_final_report
-from ..domain.contracts import DraftOutline, FinalReportArticlePayload
+from ..application.report_tasks import render_legacy_final_report
+from ..domain.contracts import DraftOutline
 from ..domain.models import ExcludedItem, SummaryItem
-from ._summary_compat import summaries_to_story_units
 
 
 # Compatibility shim: keep the legacy agent module surface while the canonical
@@ -16,17 +15,5 @@ async def generate_final_report(
     critique: str = "",
 ) -> str:
     del config, critique
-    story_units = summaries_to_story_units(summaries)
-    article_payloads = {
-        summary.url: FinalReportArticlePayload(
-            gelisme=summary.summary_tr,
-            neden_onemli=summary.why_it_matters_tr,
-        )
-        for summary in summaries
-    }
-    return render_final_report(
-        DraftOutline.model_validate(outline),
-        story_units,
-        article_payloads,
-        excluded,
-    )
+    outline_model = DraftOutline.model_validate(outline)
+    return render_legacy_final_report(outline_model, summaries, excluded)
