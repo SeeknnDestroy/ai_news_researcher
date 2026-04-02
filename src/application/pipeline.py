@@ -33,7 +33,7 @@ from .content_tasks import (
     prepare_crawl_item,
     split_newsletter_items_async,
 )
-from .report_tasks import build_candidate_pairs, build_story_set, classify_story_merges
+from .report_tasks import build_story_set, classify_story_merges
 from .report_workflow import ReportWorkflowService
 
 
@@ -237,9 +237,8 @@ class PipelineRunner:
         return self._aggregate_story_card_results(results)
 
     async def _build_story_set(self, story_cards: list[StoryCard]) -> StorySetResult:
-        candidate_pairs = build_candidate_pairs(story_cards)
-        merge_decisions = await classify_story_merges(self.llm_client, story_cards, candidate_pairs)
-        return build_story_set(story_cards, candidate_pairs, merge_decisions)
+        merge_decisions = await classify_story_merges(self.llm_client, story_cards)
+        return build_story_set(story_cards, [], merge_decisions)
 
     def _build_crawl_maps(
         self, crawl_result: CrawlStageResult

@@ -28,6 +28,7 @@ class FakeCrawlService:
 class FakeLLMClient:
     def __init__(self, *, structured: dict[str, list] | None = None) -> None:
         self.structured = {key: list(value) for key, value in (structured or {}).items()}
+        self.task_call_counts: dict[str, int] = {}
         self.usage_snapshot = {
             "totals": {
                 "request_count": 6,
@@ -109,6 +110,7 @@ class FakeLLMClient:
 
     async def generate_structured(self, *, system: str, user: str, schema, task_name: str):
         del system
+        self.task_call_counts[task_name] = self.task_call_counts.get(task_name, 0) + 1
         queue = self.structured.get(task_name)
         if queue:
             value = queue.pop(0)
@@ -197,7 +199,7 @@ class FakeLLMClient:
             )
 
         if task_name == "merge_classifier":
-            return schema.model_validate({"decision": "unrelated", "rationale": "default separate"})
+            return schema.model_validate({"merges": []})
 
         raise AssertionError(f"unexpected structured task: {task_name}")
 
@@ -299,6 +301,133 @@ async def test_pipeline_runner_persists_story_card_run(tmp_path: Path):
     assert result.persistence.debug_dir is not None
     assert len(result.story_card_result.story_cards) == 2
     assert len(result.story_set_result.story_units) == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_runner_fails_open_when_merge_classifier_errors(tmp_path: Path):
+    target_date = date(2026, 3, 13)
+    urls = ["https://example.com/a", "https://example.com/b"]
+    _write_input(tmp_path, target_date, urls)
+
+    llm_client = FakeLLMClient(
+        structured={
+            "story_card_extraction": [
+                _story_card_payload(
+                    "OpenAI launches Agents SDK",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+                _story_card_payload(
+                    "Agents SDK launch expands OpenAI platform",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+            ],
+            "merge_classifier": [StructuredOutputError("merge classifier failed")],
+        }
+    )
+    crawl_service = FakeCrawlService(
+        CrawlStageResult(
+            items=[
+                CrawlItem(
+                    url=urls[0],
+                    text="Article text A",
+                    metadata={},
+                    title="Story A",
+                    origin_url=urls[0],
+                ),
+                CrawlItem(
+                    url=urls[1],
+                    text="Article text B",
+                    metadata={},
+                    title="Story B",
+                    origin_url=urls[1],
+                ),
+            ],
+            failures=[],
+        )
+    )
+
+    runner = PipelineRunner(
+        llm_client=llm_client,
+        crawl_service=crawl_service,
+        store=FileSystemPipelineStore(),
+        event_sink=NullEventSink(),
+    )
+
+    result = await runner.run(
+        PipelineRequest(target_date=target_date, base_dir=tmp_path, max_concurrency=2)
+    )
+
+    assert len(result.story_set_result.story_units) == 2
+    assert {
+        story_unit.primary_url for story_unit in result.story_set_result.story_units
+    } == set(urls)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_runner_uses_single_merge_classifier_request(tmp_path: Path):
+    target_date = date(2026, 3, 13)
+    urls = [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+        "https://example.com/d",
+    ]
+    _write_input(tmp_path, target_date, urls)
+
+    llm_client = FakeLLMClient(
+        structured={
+            "story_card_extraction": [
+                _story_card_payload(
+                    "OpenAI launches Agents SDK",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+                _story_card_payload(
+                    "Agents SDK launch expands OpenAI platform",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+                _story_card_payload(
+                    "OpenAI ships another Agents SDK update",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+                _story_card_payload(
+                    "OpenAI platform update references Agents SDK",
+                    entities=["OpenAI", "Agents SDK"],
+                    facts=["OpenAI launched Agents SDK"],
+                ),
+            ]
+        }
+    )
+    crawl_service = FakeCrawlService(
+        CrawlStageResult(
+            items=[
+                CrawlItem(
+                    url=url,
+                    text=f"Article text for {url}",
+                    metadata={},
+                    title=url,
+                    origin_url=url,
+                )
+                for url in urls
+            ],
+            failures=[],
+        )
+    )
+
+    runner = PipelineRunner(
+        llm_client=llm_client,
+        crawl_service=crawl_service,
+        store=FileSystemPipelineStore(),
+        event_sink=NullEventSink(),
+    )
+
+    await runner.run(PipelineRequest(target_date=target_date, base_dir=tmp_path, max_concurrency=4))
+
+    assert llm_client.task_call_counts["merge_classifier"] == 1
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from ..domain.contracts import (
     FinalReportArticlePayload,
     IntroPayload,
     JudgeEvaluation,
-    MergeDecisionPayload,
+    MergePlanPayload,
     RepairPlan,
     ThemeAssignmentPlan,
 )
@@ -27,6 +27,7 @@ from ..domain.models import (
     StoryCard,
     StorySetResult,
     StoryUnit,
+    SummaryItem,
 )
 from ..infrastructure.llm_client import LLMClient
 from ..templates.prompts import (
@@ -51,14 +52,33 @@ from ..utils import format_date
 async def classify_story_merges(
     client: LLMClient,
     story_cards: list[StoryCard],
-    candidate_pairs: list[CandidatePair],
+    candidate_pairs: list[CandidatePair] | None = None,
 ) -> list[MergeDecision]:
-    story_card_map = {card.url: card for card in story_cards}
-    tasks = [
-        _classify_story_pair(client, story_card_map[pair.left_url], story_card_map[pair.right_url])
-        for pair in candidate_pairs
-    ]
-    return await asyncio.gather(*tasks)
+    del candidate_pairs
+    if len(story_cards) < 2:
+        return []
+
+    story_cards_json = json.dumps(
+        [
+            _story_card_prompt_payload(story_card, include_raw_text=False)
+            for story_card in story_cards
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+    prompt = merge_classifier_user_prompt(story_cards_json)
+    try:
+        payload = await client.generate_structured(
+            system=MERGE_CLASSIFIER_SYSTEM_PROMPT,
+            user=prompt,
+            schema=MergePlanPayload,
+            task_name="merge_classifier",
+        )
+    except Exception:
+        # Merge planning is best-effort. If it fails, keep every URL separate.
+        return []
+
+    return _merge_decisions_from_plan(payload, story_cards)
 
 
 def build_candidate_pairs(
@@ -125,10 +145,9 @@ def build_story_set(
             continue
         left_card = story_card_map[decision.left_url]
         right_card = story_card_map[decision.right_url]
-        primary_card = select_primary_story_card([left_card, right_card])
         story_unit = StoryUnit.from_story_cards(
             story_cards=[left_card, right_card],
-            primary_url=primary_card.url,
+            primary_url=decision.left_url,
             merge_relation=decision.decision,
         )
         story_units.append(story_unit)
@@ -612,33 +631,76 @@ def render_final_report(
     return report
 
 
-async def _classify_story_pair(
-    client: LLMClient, left_card: StoryCard, right_card: StoryCard
-) -> MergeDecision:
-    if min(left_card.confidence, right_card.confidence) < 0.2:
-        return MergeDecision(
-            left_url=left_card.url,
-            right_url=right_card.url,
-            decision="unrelated",
-            rationale="low confidence gate",
+def render_legacy_final_report(
+    outline: DraftOutline,
+    summaries: list[SummaryItem],
+    excluded: list[ExcludedItem],
+) -> str:
+    summary_map = {summary.url: summary for summary in summaries}
+    report_parts: list[str] = []
+    if outline.introduction_commentary:
+        report_parts.append(f"# {outline.report_title}\n\n{outline.introduction_commentary}\n")
+    else:
+        report_parts.append(f"# {outline.report_title}\n")
+
+    for theme in outline.themes:
+        report_parts.append(f"## {theme.theme_name}\n")
+        if theme.theme_commentary:
+            report_parts.append(f"\n{theme.theme_commentary}\n")
+
+        for article in theme.articles:
+            source_summary = _legacy_source_summary(article, summaries, summary_map)
+            if source_summary is None:
+                continue
+            report_parts.append(
+                "\n".join(
+                    [
+                        f"### <u>**{article.heading}**</u>",
+                        f"- **Tarih:** {format_date(source_summary.date)}",
+                        f"- **Kaynak:** [[{source_summary.source_name}]({source_summary.url})]",
+                        f"- **Gelişme:** {source_summary.summary_tr}",
+                        f"- **Neden Önemli:** {source_summary.why_it_matters_tr}",
+                    ]
+                )
+            )
+            report_parts.append("\n")
+
+    report = "\n".join(report_parts)
+    if excluded:
+        report += "\n\n## Kullanilamayan Kaynaklar\n"
+        for item in excluded:
+            report += f"- {item.url} - {item.reason}\n"
+    return report
+
+
+def _merge_decisions_from_plan(
+    payload: MergePlanPayload,
+    story_cards: list[StoryCard],
+) -> list[MergeDecision]:
+    story_card_urls = {story_card.url for story_card in story_cards}
+    used_urls: set[str] = set()
+    merge_decisions: list[MergeDecision] = []
+
+    for item in payload.merges:
+        if item.primary_url not in story_card_urls or item.supporting_url not in story_card_urls:
+            return []
+        if item.primary_url == item.supporting_url:
+            return []
+        if item.primary_url in used_urls or item.supporting_url in used_urls:
+            return []
+
+        used_urls.add(item.primary_url)
+        used_urls.add(item.supporting_url)
+        merge_decisions.append(
+            MergeDecision(
+                left_url=item.primary_url,
+                right_url=item.supporting_url,
+                decision=item.decision,
+                rationale=item.rationale,
+            )
         )
 
-    prompt = merge_classifier_user_prompt(
-        json.dumps(_story_card_prompt_payload(left_card), ensure_ascii=False, indent=2),
-        json.dumps(_story_card_prompt_payload(right_card), ensure_ascii=False, indent=2),
-    )
-    payload = await client.generate_structured(
-        system=MERGE_CLASSIFIER_SYSTEM_PROMPT,
-        user=prompt,
-        schema=MergeDecisionPayload,
-        task_name="merge_classifier",
-    )
-    return MergeDecision(
-        left_url=left_card.url,
-        right_url=right_card.url,
-        decision=payload.decision,
-        rationale=payload.rationale,
-    )
+    return merge_decisions
 
 
 async def _write_story_article(
@@ -817,6 +879,26 @@ def _story_card_prompt_payload(
     if include_raw_text:
         payload["raw_text"] = story_card.raw_text
     return payload
+
+
+def _legacy_source_summary(
+    article: DraftOutlineArticle,
+    summaries: list[SummaryItem],
+    summary_map: dict[str, SummaryItem],
+) -> SummaryItem | None:
+    primary_summary = summary_map.get(article.primary_url)
+    if primary_summary is not None:
+        return primary_summary
+
+    for url in article.news_urls_included:
+        fallback_summary = summary_map.get(url)
+        if fallback_summary is not None:
+            return fallback_summary
+
+    if summaries:
+        return summaries[0]
+
+    return None
 
 
 def _story_unit_prompt_payload(

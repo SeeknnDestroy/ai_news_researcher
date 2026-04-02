@@ -119,16 +119,18 @@ Newsletter text:
 
 
 MERGE_CLASSIFIER_SYSTEM_PROMPT = """
-You are a strict same-story classifier.
-You compare exactly two StoryCards and decide whether they describe the same story unit.
+You are a strict StoryCard merge planner for a weekly GenAI report.
+You review all StoryCards together and propose only the very small number of
+URL pairs that should become 2-URL story units.
 
 Rules:
-- Bias toward keeping stories separate unless the overlap is strong.
-- `same_story`: clearly the same development, likely alternate coverage of one story.
-- `same_event_supporting`: same event/update, where one article can support
-  the other inside a 2-URL story unit.
-- `related_but_separate`: adjacent topic or same company/theme, but should remain separate stories.
-- `unrelated`: different stories.
+- Bias strongly toward keeping stories separate unless overlap is very strong.
+- Default action is to emit no merge for a URL.
+- Only propose 2-URL merges.
+- Each URL may appear in at most one merge.
+- `same_story`: near-duplicate or clearly the same development.
+- `same_event_supporting`: same event/update, where one URL should support a primary URL.
+- Do not emit unrelated or borderline pairs.
 - Do not make theme decisions.
 - Do not invent facts.
 
@@ -136,21 +138,31 @@ Return ONLY valid JSON.
 """
 
 
-def merge_classifier_user_prompt(left_card_json: str, right_card_json: str) -> str:
+def merge_classifier_user_prompt(story_cards_json: str) -> str:
     return f"""
-Compare these two StoryCards.
+Review these StoryCards together.
 
 Return ONLY JSON with this schema:
 {{
-  "decision": "same_story | same_event_supporting | related_but_separate | unrelated",
-  "rationale": "short explanation"
+  "merges": [
+    {{
+      "primary_url": "https://...",
+      "supporting_url": "https://...",
+      "decision": "same_story | same_event_supporting",
+      "rationale": "short explanation"
+    }}
+  ]
 }}
 
-StoryCard A:
-{left_card_json}
+Rules:
+- Emit only approved merges. Omit all URLs that should remain separate.
+- Keep the merge list short and conservative.
+- Never reuse a URL across multiple merges.
+- Prefer `same_story` unless one URL is clearly the primary source and the
+  other is only supporting coverage.
 
-StoryCard B:
-{right_card_json}
+StoryCards:
+{story_cards_json}
 """
 
 

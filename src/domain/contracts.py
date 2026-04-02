@@ -135,6 +135,36 @@ class MergeDecisionPayload(BaseModel):
         return str(value or "").strip()
 
 
+class MergePlanItemPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    primary_url: str
+    supporting_url: str
+    decision: Literal["same_story", "same_event_supporting"]
+    rationale: str = ""
+
+    @field_validator("primary_url", "supporting_url", "rationale", mode="before")
+    @classmethod
+    def _normalize_merge_item_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_pair_urls(self):
+        if not self.primary_url:
+            raise ValueError("primary_url is required")
+        if not self.supporting_url:
+            raise ValueError("supporting_url is required")
+        if self.primary_url == self.supporting_url:
+            raise ValueError("supporting_url must differ from primary_url")
+        return self
+
+
+class MergePlanPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    merges: list[MergePlanItemPayload] = Field(default_factory=list)
+
+
 class ThemeAssignmentThemePayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

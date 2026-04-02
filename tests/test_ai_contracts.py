@@ -7,6 +7,7 @@ from src.domain.contracts import (
     DraftOutlineArticle,
     JudgeEvaluation,
     MergeDecisionPayload,
+    MergePlanPayload,
     RepairPlan,
     StoryCardPayload,
     SummaryPayload,
@@ -92,6 +93,21 @@ def test_story_card_payload_requires_authoritative_fields():
 def test_merge_decision_payload_limits_decision_labels():
     with pytest.raises(ValidationError):
         MergeDecisionPayload.model_validate({"decision": "merge_them_all"})
+
+
+def test_merge_plan_payload_rejects_same_url_pairs():
+    with pytest.raises(ValidationError):
+        MergePlanPayload.model_validate(
+            {
+                "merges": [
+                    {
+                        "primary_url": "https://example.com/a",
+                        "supporting_url": "https://example.com/a",
+                        "decision": "same_story",
+                    }
+                ]
+            }
+        )
 
 
 def test_theme_assignment_plan_requires_report_title():
