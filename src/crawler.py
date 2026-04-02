@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-import tempfile
-from typing import Any, List, Tuple
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from .domain.models import CrawlItem
+from .utils import source_family_from_url, source_name_from_url
 
 
 class CrawlError(RuntimeError):
@@ -62,19 +63,27 @@ class Crawl4AIRuntime:
     UndetectedAdapter: type | None
 
 
-def crawl_urls(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
+def crawl_urls(
+    urls: list[str], max_concurrency: int = 3
+) -> tuple[list[CrawlItem], list[tuple[str, str]]]:
     """Return (items, failures)."""
     return asyncio.run(crawl_urls_async(urls, max_concurrency=max_concurrency))
 
 
-async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[List[CrawlItem], List[tuple[str, str]]]:
+async def crawl_urls_async(
+    urls: list[str], max_concurrency: int = 3
+) -> tuple[list[CrawlItem], list[tuple[str, str]]]:
     if not urls:
         return [], []
 
     html_urls = [url for url in urls if not _looks_like_pdf_url(url)]
     pdf_urls = [url for url in urls if _looks_like_pdf_url(url)]
 
-    html_task = asyncio.create_task(_crawl_html_urls(html_urls, max_concurrency=max_concurrency)) if html_urls else None
+    html_task = (
+        asyncio.create_task(_crawl_html_urls(html_urls, max_concurrency=max_concurrency))
+        if html_urls
+        else None
+    )
     pdf_task = asyncio.create_task(_crawl_pdf_urls(pdf_urls)) if pdf_urls else None
 
     html_items_by_url: dict[str, CrawlItem] = {}
@@ -88,8 +97,8 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
     if pdf_task is not None:
         pdf_items_by_url, pdf_failures_by_url = await pdf_task
 
-    items: List[CrawlItem] = []
-    failures: List[tuple[str, str]] = []
+    items: list[CrawlItem] = []
+    failures: list[tuple[str, str]] = []
 
     for url in urls:
         if url in html_items_by_url:
@@ -107,7 +116,9 @@ async def crawl_urls_async(urls: List[str], max_concurrency: int = 3) -> Tuple[L
     return items, failures
 
 
-async def _crawl_html_urls(urls: list[str], *, max_concurrency: int) -> tuple[dict[str, CrawlItem], dict[str, str]]:
+async def _crawl_html_urls(
+    urls: list[str], *, max_concurrency: int
+) -> tuple[dict[str, CrawlItem], dict[str, str]]:
     runtime = _load_crawl4ai_runtime()
     normal_outcomes = await _crawl_html_batch(
         runtime,
@@ -162,20 +173,24 @@ async def _crawl_html_batch(
     *,
     max_concurrency: int,
     use_undetected: bool,
-) -> dict[str, "_CrawlOutcome"]:
+) -> dict[str, _CrawlOutcome]:
     if not urls:
         return {}
 
     browser_config = _build_browser_config(runtime, use_undetected=use_undetected)
     run_config = _build_run_config(runtime)
     dispatcher = _build_dispatcher(runtime, max_concurrency)
-    crawler_strategy = _build_crawler_strategy(runtime, browser_config, use_undetected=use_undetected)
+    crawler_strategy = _build_crawler_strategy(
+        runtime, browser_config, use_undetected=use_undetected
+    )
 
-    async with runtime.AsyncWebCrawler(config=browser_config, crawler_strategy=crawler_strategy) as crawler:
+    async with runtime.AsyncWebCrawler(
+        config=browser_config, crawler_strategy=crawler_strategy
+    ) as crawler:
         raw_results = await _run_batch(crawler, urls, run_config, dispatcher)
 
     outcomes: dict[str, _CrawlOutcome] = {}
-    for requested_url, result in zip(urls, raw_results):
+    for requested_url, result in zip(urls, raw_results, strict=True):
         outcomes[requested_url] = _normalize_crawl4ai_result(requested_url, result)
     return outcomes
 
@@ -219,7 +234,9 @@ def _build_run_config(runtime: Crawl4AIRuntime):
 def _build_dispatcher(runtime: Crawl4AIRuntime, max_concurrency: int):
     if runtime.MemoryAdaptiveDispatcher is None:
         return None
-    return runtime.MemoryAdaptiveDispatcher(max_session_permit=max_concurrency, memory_threshold_percent=95.0)
+    return runtime.MemoryAdaptiveDispatcher(
+        max_session_permit=max_concurrency, memory_threshold_percent=95.0
+    )
 
 
 def _build_crawler_strategy(runtime: Crawl4AIRuntime, browser_config, *, use_undetected: bool):
@@ -259,17 +276,23 @@ def _normalize_crawl4ai_result(requested_url: str, result: object | None) -> _Cr
         if _looks_like_block_page_text(title, markdown_text, error_message):
             return _CrawlOutcome(
                 item=None,
-                failure_reason=_blocked_failure_reason(result, error_message=error_message, status_code=status_code),
+                failure_reason=_blocked_failure_reason(
+                    result, error_message=error_message, status_code=status_code
+                ),
                 blocked=True,
             )
         if not markdown_text.strip():
             if _looks_like_block_page_text(title, markdown_text, error_message):
                 return _CrawlOutcome(
                     item=None,
-                    failure_reason=_blocked_failure_reason(result, error_message=error_message, status_code=status_code),
+                    failure_reason=_blocked_failure_reason(
+                        result, error_message=error_message, status_code=status_code
+                    ),
                     blocked=True,
                 )
-            return _CrawlOutcome(item=None, failure_reason="crawl4ai returned empty content", blocked=False)
+            return _CrawlOutcome(
+                item=None, failure_reason="crawl4ai returned empty content", blocked=False
+            )
         return _CrawlOutcome(
             item=CrawlItem(
                 url=requested_url,
@@ -277,6 +300,12 @@ def _normalize_crawl4ai_result(requested_url: str, result: object | None) -> _Cr
                 metadata=metadata,
                 title=title,
                 origin_url=requested_url,
+                title_raw=title,
+                source_name=_source_name(metadata, requested_url),
+                source_family=source_family_from_url(final_url or requested_url),
+                content_type="text/html",
+                crawl_quality_flags=_crawl_quality_flags(markdown_text, blocked=False),
+                blocked_or_partial=False,
             ),
             failure_reason=None,
             blocked=False,
@@ -288,7 +317,9 @@ def _normalize_crawl4ai_result(requested_url: str, result: object | None) -> _Cr
     if blocked:
         return _CrawlOutcome(
             item=None,
-            failure_reason=_blocked_failure_reason(result, error_message=error_message, status_code=status_code),
+            failure_reason=_blocked_failure_reason(
+                result, error_message=error_message, status_code=status_code
+            ),
             blocked=True,
         )
 
@@ -387,6 +418,12 @@ def _crawl_pdf(url: str) -> tuple[CrawlItem | None, str | None]:
             metadata={"content_type": "application/pdf"},
             title=title,
             origin_url=url,
+            title_raw=title,
+            source_name=source_name_from_url(url),
+            source_family=source_family_from_url(url),
+            content_type="application/pdf",
+            crawl_quality_flags=[],
+            blocked_or_partial=False,
         ),
         None,
     )
@@ -420,7 +457,7 @@ def _extract_pdf_text(url: str) -> str:
 
     try:
         liteparse_module = importlib.import_module("liteparse")
-        LiteParse = getattr(liteparse_module, "LiteParse")
+        LiteParse = liteparse_module.LiteParse
         cli_not_found_error = getattr(liteparse_module, "CLINotFoundError", RuntimeError)
     except Exception:
         _extract_pdf_text._last_failure_reason = LITEPARSE_INSTALL_HINT
@@ -463,6 +500,25 @@ def _title_from_pdf_url(url: str) -> str:
     return slug or "PDF Document"
 
 
+def _source_name(metadata: dict[str, object], url: str) -> str:
+    for key in ("site_name", "og:site_name", "source"):
+        value = metadata.get(key)
+        if value:
+            return str(value).strip()
+    return source_name_from_url(url)
+
+
+def _crawl_quality_flags(text: str, *, blocked: bool) -> list[str]:
+    flags: list[str] = []
+    if blocked:
+        flags.append("blocked")
+    if not text.strip():
+        flags.append("empty")
+    if len(text.split()) < 80:
+        flags.append("short_text")
+    return flags
+
+
 def _html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     return " ".join(soup.get_text(" ").split())
@@ -477,7 +533,9 @@ def _load_crawl4ai_runtime() -> Crawl4AIRuntime:
     try:
         crawl4ai_module = importlib.import_module("crawl4ai")
     except ImportError as exc:
-        raise CrawlError("crawl4ai is required. Install project dependencies from pyproject.toml.") from exc
+        raise CrawlError(
+            "crawl4ai is required. Install project dependencies from pyproject.toml."
+        ) from exc
 
     AsyncWebCrawler = getattr(crawl4ai_module, "AsyncWebCrawler", None)
     BrowserConfig = getattr(crawl4ai_module, "BrowserConfig", None)
@@ -510,7 +568,9 @@ def _load_crawl4ai_runtime() -> Crawl4AIRuntime:
     AsyncPlaywrightCrawlerStrategy = None
     try:
         strategy_module = importlib.import_module("crawl4ai.async_crawler_strategy")
-        AsyncPlaywrightCrawlerStrategy = getattr(strategy_module, "AsyncPlaywrightCrawlerStrategy", None)
+        AsyncPlaywrightCrawlerStrategy = getattr(
+            strategy_module, "AsyncPlaywrightCrawlerStrategy", None
+        )
     except Exception:
         AsyncPlaywrightCrawlerStrategy = None
 

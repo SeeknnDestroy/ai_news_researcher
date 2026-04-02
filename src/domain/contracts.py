@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -66,6 +68,164 @@ class NewsletterSplitPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     items: list[NewsletterSplitItemPayload] = Field(default_factory=list)
+
+
+class StoryCardPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    story_title_tr: str
+    story_type: str
+    key_facts: list[str] = Field(default_factory=list)
+    must_keep_entities: list[str] = Field(default_factory=list)
+    must_keep_facts: list[str] = Field(default_factory=list)
+    why_it_matters_tr: str
+    technical_relevance: float = 0.0
+    strategic_relevance: float = 0.0
+    confidence: float = 0.0
+
+    @field_validator("story_title_tr", "story_type", "why_it_matters_tr", mode="before")
+    @classmethod
+    def _normalize_story_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("story_title_tr", "story_type", "why_it_matters_tr")
+    @classmethod
+    def _require_story_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("required text field is empty")
+        return value
+
+    @field_validator("key_facts", "must_keep_entities", "must_keep_facts", mode="before")
+    @classmethod
+    def _normalize_string_list(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        normalized_values: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            normalized_key = text.casefold()
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+            normalized_values.append(text)
+        return normalized_values[:8]
+
+    @field_validator("technical_relevance", "strategic_relevance", "confidence", mode="before")
+    @classmethod
+    def _normalize_score(cls, value: object) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = 0.0
+        return max(0.0, min(1.0, score))
+
+
+class MergeDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    decision: Literal["same_story", "same_event_supporting", "related_but_separate", "unrelated"]
+    rationale: str = ""
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def _normalize_rationale(cls, value: object) -> str:
+        return str(value or "").strip()
+
+
+class ThemeAssignmentThemePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    theme_name: str
+    theme_commentary: str = ""
+    story_unit_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("theme_name", "theme_commentary", mode="before")
+    @classmethod
+    def _normalize_theme_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("theme_name")
+    @classmethod
+    def _require_theme_name(cls, value: str) -> str:
+        if not value:
+            raise ValueError("theme_name is required")
+        return value
+
+    @field_validator("story_unit_ids", mode="before")
+    @classmethod
+    def _normalize_story_unit_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
+class ThemeAssignmentPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    report_title: str
+    introduction_signal: str = ""
+    themes: list[ThemeAssignmentThemePayload] = Field(default_factory=list)
+
+    @field_validator("report_title", "introduction_signal", mode="before")
+    @classmethod
+    def _normalize_plan_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("report_title")
+    @classmethod
+    def _require_report_title(cls, value: str) -> str:
+        if not value:
+            raise ValueError("report_title is required")
+        return value
+
+
+class RepairOperationPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    operation: Literal[
+        "assign_missing_story_unit",
+        "move_story_unit",
+        "rename_theme",
+        "reorder_story_units",
+        "retitle_story_unit",
+        "set_primary_url",
+        "split_story_unit",
+    ]
+    story_unit_id: str = ""
+    theme_name: str = ""
+    target_theme_name: str = ""
+    ordered_story_unit_ids: list[str] = Field(default_factory=list)
+    new_value: str = ""
+    reason: str = ""
+
+    @field_validator(
+        "story_unit_id", "theme_name", "target_theme_name", "new_value", "reason", mode="before"
+    )
+    @classmethod
+    def _normalize_operation_text(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("ordered_story_unit_ids", mode="before")
+    @classmethod
+    def _normalize_ordered_story_unit_ids(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
+class RepairPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    critique: str = ""
+    operations: list[RepairOperationPayload] = Field(default_factory=list)
+
+    @field_validator("critique", mode="before")
+    @classmethod
+    def _normalize_repair_critique(cls, value: object) -> str:
+        return str(value or "").strip()
 
 
 class DraftOutlineArticle(BaseModel):
@@ -192,6 +352,50 @@ class FinalReportArticlePayload(BaseModel):
     @field_validator("gelisme", "neden_onemli")
     @classmethod
     def _require_text(cls, value: str) -> str:
+        if not value:
+            raise ValueError("required text field is empty")
+        return value
+
+
+class DenseGelismePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    missing_entities: list[str] = Field(default_factory=list)
+    gelisme: str
+
+    @field_validator("missing_entities", mode="before")
+    @classmethod
+    def _normalize_missing_entities(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()][:2]
+
+    @field_validator("gelisme", mode="before")
+    @classmethod
+    def _normalize_gelisme(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("gelisme")
+    @classmethod
+    def _require_gelisme(cls, value: str) -> str:
+        if not value:
+            raise ValueError("required text field is empty")
+        return value
+
+
+class IntroPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    introduction_commentary: str
+
+    @field_validator("introduction_commentary", mode="before")
+    @classmethod
+    def _normalize_intro(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("introduction_commentary")
+    @classmethod
+    def _require_intro(cls, value: str) -> str:
         if not value:
             raise ValueError("required text field is empty")
         return value

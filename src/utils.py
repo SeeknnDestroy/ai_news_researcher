@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
 import hashlib
 import re
 import time
 from datetime import datetime
+from urllib.parse import urlparse
+
 import tiktoken
 
 
@@ -20,20 +21,30 @@ def source_name_from_url(url: str) -> str:
     return base.replace("-", " ").title()
 
 
+def source_family_from_url(url: str) -> str:
+    netloc = urlparse(url).netloc or url
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    parts = [part for part in netloc.split(".") if part]
+    if len(parts) >= 2:
+        return parts[-2].lower()
+    return netloc.lower()
+
+
 def clamp_text_tokens(text: str, max_tokens: int, model_name: str = "gpt-5.4-nano") -> str:
     """Safely truncates text to fit within a specific token count."""
     if not text:
         return ""
-    
+
     try:
         encoding = tiktoken.encoding_for_model(model_name)
     except KeyError:
         encoding = tiktoken.get_encoding("cl100k_base")
-        
+
     tokens = encoding.encode(text)
     if len(tokens) <= max_tokens:
         return text
-        
+
     return encoding.decode(tokens[:max_tokens]) + "..."
 
 
@@ -81,10 +92,11 @@ def log_stage(stage: str, message: str = "") -> None:
         payload += f" | {message}"
     payload += f" (+{elapsed:.1f}s)"
     print(payload, flush=True)
-    
+
     # Try pushing to tracker if it exists
     try:
         from .tracker.server import state
+
         if state:
             state.update(stage, message)
     except ImportError:

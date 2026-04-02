@@ -10,13 +10,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from threading import Lock
 from time import monotonic
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import tiktoken
 from pydantic import BaseModel
 
-from .config import settings
+from .config import settings, task_model_routes
 
 
 class LLMError(RuntimeError):
@@ -170,10 +170,11 @@ class RateLimiter:
 
 @dataclass(frozen=True)
 class OpenAIConfig:
-    model: str = field(default_factory=lambda: settings.openai_model)
+    model: str = field(default_factory=lambda: settings.openai_default_model)
+    task_models: dict[str, str] = field(default_factory=lambda: task_model_routes(settings))
     temperature: float = field(default_factory=lambda: settings.openai_temperature)
-    reasoning_effort: Optional[str] = field(default_factory=lambda: settings.openai_reasoning_effort)
-    api_key: Optional[str] = field(default_factory=lambda: settings.openai_api_key)
+    reasoning_effort: str | None = field(default_factory=lambda: settings.openai_reasoning_effort)
+    api_key: str | None = field(default_factory=lambda: settings.openai_api_key)
     base_url: str = field(default_factory=lambda: settings.openai_base_url)
     timeout_s: int = field(default_factory=lambda: settings.openai_timeout_s)
     user_agent: str = "ai-news-researcher/0.1"
@@ -238,14 +239,18 @@ async def complete_async(
     task_name: str,
     schema: type[BaseModel] | None,
 ) -> str:
-    url, headers, payload, estimated_tokens = _build_request(config, system, user, task_name, schema)
+    url, headers, payload, estimated_tokens = _build_request(
+        config, system, user, task_name, schema
+    )
     config.usage_collector.record_attempt(task_name)
 
     for attempt_index in range(6):
         await config.rate_limiter.acquire(estimated_tokens)
 
         try:
-            response = await _post_request(url=url, headers=headers, payload=payload, timeout_s=config.timeout_s)
+            response = await _post_request(
+                url=url, headers=headers, payload=payload, timeout_s=config.timeout_s
+            )
         except httpx.RequestError as exc:
             if attempt_index == 5:
                 raise LLMError(f"OpenAI API request failed: {exc}") from exc
@@ -277,7 +282,9 @@ async def complete_async(
     raise LLMError("OpenAI request retry loop exhausted unexpectedly.")
 
 
-async def _post_request(*, url: str, headers: dict[str, str], payload: dict[str, Any], timeout_s: int) -> httpx.Response:
+async def _post_request(
+    *, url: str, headers: dict[str, str], payload: dict[str, Any], timeout_s: int
+) -> httpx.Response:
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         return await client.post(url, headers=headers, json=payload)
 
@@ -293,10 +300,11 @@ def _build_request(
     if not api_key:
         raise LLMError("Missing OPENAI_API_KEY environment variable.")
 
+    model_name = _model_for_task(config, task_name)
     text_format = _text_format(task_name, schema)
     estimated_output_tokens = _estimated_output_tokens_for_task(config, task_name)
     payload: dict[str, Any] = {
-        "model": config.model,
+        "model": model_name,
         "instructions": system,
         "input": user,
         "store": config.store,
@@ -309,7 +317,7 @@ def _build_request(
     if config.reasoning_effort:
         payload["reasoning"] = {"effort": config.reasoning_effort}
 
-    if _supports_temperature(config):
+    if _supports_temperature(config, model_name):
         payload["temperature"] = config.temperature
 
     headers = {
@@ -319,7 +327,7 @@ def _build_request(
         "User-Agent": config.user_agent,
     }
 
-    estimated_input_tokens = _estimate_request_tokens(system, user, text_format, config.model)
+    estimated_input_tokens = _estimate_request_tokens(system, user, text_format, model_name)
     estimated_tokens = max(estimated_input_tokens, estimated_output_tokens)
     return f"{config.base_url}/responses", headers, payload, estimated_tokens
 
@@ -327,7 +335,7 @@ def _build_request(
 def _estimated_output_tokens_for_task(config: OpenAIConfig, task_name: str) -> int:
     # We do not send client-side output caps to the Responses API, but the rate
     # limiter still needs a reasonable output estimate for token budgeting.
-    if task_name == "draft_outline":
+    if task_name in {"draft_outline", "theme_assignment"}:
         return max(config.max_output_tokens, 12000)
     return config.max_output_tokens
 
@@ -370,13 +378,15 @@ def _close_object_nodes(node: Any) -> None:
             _close_object_nodes(item)
 
 
-def _supports_temperature(config: OpenAIConfig) -> bool:
-    if not config.model.startswith("gpt-5.4"):
+def _supports_temperature(config: OpenAIConfig, model_name: str) -> bool:
+    if not model_name.startswith("gpt-5.4"):
         return False
     return config.reasoning_effort in (None, "none")
 
 
-def _estimate_request_tokens(system: str, user: str, text_format: dict[str, Any], model_name: str) -> int:
+def _estimate_request_tokens(
+    system: str, user: str, text_format: dict[str, Any], model_name: str
+) -> int:
     format_text = json.dumps(text_format, ensure_ascii=False, sort_keys=True)
     combined_text = "\n".join(part for part in (system, user, format_text) if part)
     return max(1, _estimate_text_tokens(combined_text, model_name))
@@ -434,10 +444,10 @@ def _response_incomplete_reason(data: dict[str, Any]) -> str | None:
 def _parse_json_response(raw: str) -> dict[str, Any]:
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         extracted = _extract_json_object(raw)
         if extracted is None:
-            raise LLMError("LLM did not return valid JSON.")
+            raise LLMError("LLM did not return valid JSON.") from exc
         return json.loads(extracted)
 
 
@@ -497,16 +507,29 @@ def _parse_duration(value: str | None) -> float | None:
     return None
 
 
-def _extract_json_object(text: str) -> Optional[str]:
+def _extract_json_object(text: str) -> str | None:
     match = re.search(r"\{[\s\S]*\}", text)
     return match.group(0) if match else None
 
 
 def _role_for_task(task_name: str) -> str:
-    if task_name in {"article_summary", "newsletter_split"}:
+    if task_name in {"story_card_extraction", "newsletter_split"}:
         return "researcher"
+    if task_name == "merge_classifier":
+        return "planner"
+    if task_name == "theme_assignment":
+        return "planner"
     if task_name == "judge_evaluation":
         return "judge"
-    if task_name in {"draft_outline", "final_report_theme"}:
+    if task_name == "repair_planner":
+        return "judge"
+    if task_name in {"draft_outline", "story_article", "cod_gelisme", "intro_writer"}:
         return "writer"
     return "other"
+
+
+def _model_for_task(config: OpenAIConfig, task_name: str) -> str:
+    routed_model = config.task_models.get(task_name)
+    if routed_model:
+        return routed_model
+    return config.model

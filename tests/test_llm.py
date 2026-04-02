@@ -1,9 +1,9 @@
-from src.domain.contracts import DraftOutline, SummaryPayload
+from src.domain.contracts import DraftOutline, StoryCardPayload
 from src.llm import OpenAIConfig, _build_request, _response_incomplete_reason, _text_format
 
 
-def test_text_format_closes_summary_schema_for_responses_api():
-    text_format = _text_format("article_summary", SummaryPayload)
+def test_text_format_closes_story_card_schema_for_responses_api():
+    text_format = _text_format("story_card_extraction", StoryCardPayload)
     schema = text_format["schema"]
 
     assert schema["additionalProperties"] is False
@@ -18,9 +18,13 @@ def test_text_format_closes_nested_object_schemas_for_responses_api():
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == set(schema["properties"])
     assert defs["DraftOutlineTheme"]["additionalProperties"] is False
-    assert set(defs["DraftOutlineTheme"]["required"]) == set(defs["DraftOutlineTheme"]["properties"])
+    assert set(defs["DraftOutlineTheme"]["required"]) == set(
+        defs["DraftOutlineTheme"]["properties"]
+    )
     assert defs["DraftOutlineArticle"]["additionalProperties"] is False
-    assert set(defs["DraftOutlineArticle"]["required"]) == set(defs["DraftOutlineArticle"]["properties"])
+    assert set(defs["DraftOutlineArticle"]["required"]) == set(
+        defs["DraftOutlineArticle"]["properties"]
+    )
 
 
 def test_build_request_omits_output_cap_but_keeps_draft_outline_estimate():
@@ -35,6 +39,19 @@ def test_build_request_omits_output_cap_but_keeps_draft_outline_estimate():
 
     assert "max_output_tokens" not in payload
     assert estimated_tokens >= 12000
+
+
+def test_build_request_routes_models_by_task_name():
+    config = OpenAIConfig(api_key="test-key")
+    _, _, payload, _ = _build_request(
+        config,
+        "system",
+        "user",
+        "merge_classifier",
+        None,
+    )
+
+    assert payload["model"] == "gpt-5.4"
 
 
 def test_response_incomplete_reason_reads_responses_api_status():
