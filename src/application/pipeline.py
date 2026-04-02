@@ -6,7 +6,6 @@ from datetime import date, datetime
 from pathlib import Path
 from time import perf_counter
 
-from ..date_extract import extract_date
 from ..domain.models import (
     CrawlItem,
     CrawlStageResult,
@@ -15,14 +14,26 @@ from ..domain.models import (
     NewsletterSplitResult,
     PipelineRunMetadata,
     PipelineRunResult,
-    SummaryItem,
-    SummaryStageResult,
+    StoryCard,
+    StoryCardStageResult,
+    StorySetResult,
 )
-from ..ingest import load_input
-from ..infrastructure.events import CompositeEventSink, ConsoleEventSink, EventSink, NullEventSink, PipelineEvent
+from ..infrastructure.events import (
+    CompositeEventSink,
+    ConsoleEventSink,
+    EventSink,
+    NullEventSink,
+    PipelineEvent,
+)
 from ..infrastructure.llm_client import LLMClient, StructuredOutputError
 from ..infrastructure.persistence import FileSystemPipelineStore
-from .content_tasks import split_newsletter_items_async, summarize_article_async
+from ..ingest import load_input
+from .content_tasks import (
+    extract_story_card_async,
+    prepare_crawl_item,
+    split_newsletter_items_async,
+)
+from .report_tasks import build_candidate_pairs, build_story_set, classify_story_merges
 from .report_workflow import ReportWorkflowService
 
 
@@ -35,7 +46,7 @@ class PipelineRequest:
 
 @dataclass(slots=True)
 class UrlProcessingResult:
-    summaries: list[SummaryItem]
+    story_cards: list[StoryCard]
     excluded: list[ExcludedItem]
     newsletter_splits: list[NewsletterSplitResult]
     validation_failures: list[str]
@@ -44,8 +55,8 @@ class UrlProcessingResult:
 
 
 @dataclass(slots=True)
-class SummaryStageComputation:
-    result: SummaryStageResult
+class StoryCardStageComputation:
+    result: StoryCardStageResult
     validation_failures: list[str]
     fallbacks: list[str]
     debug_dir: Path | None
@@ -60,8 +71,8 @@ class PreparedSplitResult:
 
 
 @dataclass(slots=True)
-class SummaryExecutionResult:
-    summaries: list[SummaryItem]
+class StoryCardExecutionResult:
+    story_cards: list[StoryCard]
     validation_failures: list[str]
     errors: list[str]
     debug_paths: list[Path]
@@ -81,7 +92,9 @@ class PipelineRunner:
         self.llm_client = llm_client
         self.crawl_service = crawl_service
         self.store = store or FileSystemPipelineStore()
-        self.workflow = workflow or ReportWorkflowService(llm_client=llm_client, event_sink=event_sink)
+        self.workflow = workflow or ReportWorkflowService(
+            llm_client=llm_client, event_sink=event_sink
+        )
         self.event_sink = event_sink or NullEventSink()
         self.input_loader = input_loader
 
@@ -96,14 +109,18 @@ class PipelineRunner:
         input_result = self._time_stage(
             metadata,
             "load_input",
-            lambda: InputLoadResult(path=paths.input_path, data=self.input_loader(paths.input_path)),
+            lambda: InputLoadResult(
+                path=paths.input_path, data=self.input_loader(paths.input_path)
+            ),
         )
         self._emit("LOAD_INPUT", f"path={input_result.path}")
 
         crawl_result = await self._time_stage_async(
             metadata,
             "crawl",
-            lambda: self.crawl_service.crawl(input_result.data.urls, max_concurrency=request.max_concurrency),
+            lambda: self.crawl_service.crawl(
+                input_result.data.urls, max_concurrency=request.max_concurrency
+            ),
         )
         self._emit(
             "CRAWL",
@@ -113,38 +130,54 @@ class PipelineRunner:
         raw_dir = self.store.write_raw_texts(paths.output_path, crawl_result.items, metadata.run_id)
         self._emit("RAW_SAVE", f"saved={len(crawl_result.items)}")
 
-        summary_computation = await self._time_stage_async(
+        story_card_computation = await self._time_stage_async(
             metadata,
-            "summarize",
-            lambda: self._summarize_urls(
+            "story_cards",
+            lambda: self._extract_story_cards(
                 urls=input_result.data.urls,
                 crawl_result=crawl_result,
                 output_path=paths.output_path,
                 run_id=metadata.run_id,
             ),
         )
-        summary_stage_result = summary_computation.result
-        metadata.validation_failures.extend(self._dedupe(summary_computation.validation_failures))
-        metadata.fallbacks.extend(self._dedupe(summary_computation.fallbacks))
+        story_card_result = story_card_computation.result
+        metadata.validation_failures.extend(
+            self._dedupe(story_card_computation.validation_failures)
+        )
+        metadata.fallbacks.extend(self._dedupe(story_card_computation.fallbacks))
 
-        if not summary_stage_result.summaries:
+        if not story_card_result.story_cards:
             failure_message = self._build_no_valid_articles_message(
-                summary_stage_result=summary_stage_result,
-                validation_failures=summary_computation.validation_failures,
+                story_card_result=story_card_result,
+                validation_failures=story_card_computation.validation_failures,
             )
             raise SystemExit(failure_message)
 
         self._emit(
-            "FILTER",
-            f"included={len(summary_stage_result.summaries)} excluded={len(summary_stage_result.excluded)}",
+            "STORY_CARDS",
+            "included="
+            f"{len(story_card_result.story_cards)} "
+            "excluded="
+            f"{len(story_card_result.excluded)}",
+        )
+
+        story_set_result = await self._time_stage_async(
+            metadata,
+            "story_set",
+            lambda: self._build_story_set(story_card_result.story_cards),
+        )
+        self._emit(
+            "STORY_SET",
+            f"units={len(story_set_result.story_units)} "
+            f"pairs={len(story_set_result.candidate_pairs)}",
         )
 
         draft_result = await self._time_stage_async(
             metadata,
             "workflow",
             lambda: self.workflow.run(
-                summaries=summary_stage_result.summaries,
-                excluded=summary_stage_result.excluded,
+                story_units=story_set_result.story_units,
+                excluded=story_card_result.excluded,
                 eval_enabled=input_result.data.eval_enabled,
             ),
         )
@@ -158,44 +191,67 @@ class PipelineRunner:
                 paths=paths,
                 input_result=input_result,
                 crawl_result=crawl_result,
-                summary_result=summary_stage_result,
+                story_card_result=story_card_result,
+                story_set_result=story_set_result,
                 draft_result=draft_result,
                 metadata=metadata,
                 raw_dir=raw_dir,
-                debug_dir=summary_computation.debug_dir,
+                debug_dir=story_card_computation.debug_dir,
             ),
         )
-        self._emit("WRITE_OUTPUT", f"report={persistence.report_path} artifacts={persistence.artifact_path}")
+        self._emit(
+            "WRITE_OUTPUT",
+            f"report={persistence.report_path} artifacts={persistence.artifact_path}",
+        )
         return PipelineRunResult(
             paths=paths,
             input_result=input_result,
             crawl_result=crawl_result,
-            summary_result=summary_stage_result,
+            story_card_result=story_card_result,
+            story_set_result=story_set_result,
             draft_result=draft_result,
             persistence=persistence,
             metadata=metadata,
         )
 
-    async def _summarize_urls(
+    async def _extract_story_cards(
         self,
         *,
         urls: list[str],
         crawl_result: CrawlStageResult,
         output_path: Path,
         run_id: str,
-    ) -> SummaryStageComputation:
+    ) -> StoryCardStageComputation:
         crawl_map, failure_map = self._build_crawl_maps(crawl_result)
-        tasks = [self._process_url(url=url, crawl_map=crawl_map, failure_map=failure_map, output_path=output_path, run_id=run_id) for url in urls]
+        tasks = [
+            self._process_url(
+                url=url,
+                crawl_map=crawl_map,
+                failure_map=failure_map,
+                output_path=output_path,
+                run_id=run_id,
+            )
+            for url in urls
+        ]
         results = await asyncio.gather(*tasks)
-        return self._aggregate_summary_results(results)
+        return self._aggregate_story_card_results(results)
 
-    def _build_crawl_maps(self, crawl_result: CrawlStageResult) -> tuple[dict[str, CrawlItem], dict[str, str]]:
+    async def _build_story_set(self, story_cards: list[StoryCard]) -> StorySetResult:
+        candidate_pairs = build_candidate_pairs(story_cards)
+        merge_decisions = await classify_story_merges(self.llm_client, story_cards, candidate_pairs)
+        return build_story_set(story_cards, candidate_pairs, merge_decisions)
+
+    def _build_crawl_maps(
+        self, crawl_result: CrawlStageResult
+    ) -> tuple[dict[str, CrawlItem], dict[str, str]]:
         crawl_map = {item.url: item for item in crawl_result.items}
         failure_map = {item.url: item.reason for item in crawl_result.failures}
         return crawl_map, failure_map
 
-    def _aggregate_summary_results(self, results: list[UrlProcessingResult]) -> SummaryStageComputation:
-        summaries: list[SummaryItem] = []
+    def _aggregate_story_card_results(
+        self, results: list[UrlProcessingResult]
+    ) -> StoryCardStageComputation:
+        story_cards: list[StoryCard] = []
         excluded: list[ExcludedItem] = []
         newsletter_splits: list[NewsletterSplitResult] = []
         validation_failures: list[str] = []
@@ -203,7 +259,7 @@ class PipelineRunner:
         debug_paths: list[Path] = []
 
         for result in results:
-            summaries.extend(result.summaries)
+            story_cards.extend(result.story_cards)
             excluded.extend(result.excluded)
             newsletter_splits.extend(result.newsletter_splits)
             validation_failures.extend(result.validation_failures)
@@ -211,11 +267,13 @@ class PipelineRunner:
             debug_paths.extend(result.debug_paths)
 
         debug_dir = debug_paths[0].parent if debug_paths else None
-        return SummaryStageComputation(
-            result=SummaryStageResult(
-                summaries=summaries,
+        source_texts = {story_card.url: story_card.raw_text for story_card in story_cards}
+        return StoryCardStageComputation(
+            result=StoryCardStageResult(
+                story_cards=story_cards,
                 excluded=excluded,
                 newsletter_splits=newsletter_splits,
+                source_texts=source_texts,
             ),
             validation_failures=validation_failures,
             fallbacks=fallbacks,
@@ -238,34 +296,32 @@ class PipelineRunner:
         if item is None:
             return self._excluded_result(url=url, reason="crawl result missing", stage="crawl")
 
-        date_result = extract_date(item.metadata, item.text, item.url)
         prepared_split = await self._prepare_split_result(
             item=item,
             output_path=output_path,
             run_id=run_id,
         )
-        execution = await self._summarize_split_items(
+        execution = await self._extract_story_cards_for_split_items(
             items=prepared_split.items,
             output_path=output_path,
             run_id=run_id,
-            date_value=date_result.value,
-            date_inferred=date_result.inferred,
         )
 
-        if execution.summaries:
+        if execution.story_cards:
             return UrlProcessingResult(
-                summaries=execution.summaries,
+                story_cards=execution.story_cards,
                 excluded=[],
                 newsletter_splits=prepared_split.newsletter_splits,
-                validation_failures=prepared_split.validation_failures + execution.validation_failures,
+                validation_failures=prepared_split.validation_failures
+                + execution.validation_failures,
                 fallbacks=prepared_split.fallbacks,
                 debug_paths=execution.debug_paths,
             )
 
         return self._excluded_result(
             url=url,
-            reason=execution.errors[0] if execution.errors else "summary generation failed",
-            stage="summarize",
+            reason=execution.errors[0] if execution.errors else "story card extraction failed",
+            stage="story_card",
             newsletter_splits=prepared_split.newsletter_splits,
             validation_failures=prepared_split.validation_failures + execution.validation_failures,
             fallbacks=prepared_split.fallbacks,
@@ -293,6 +349,9 @@ class PipelineRunner:
         if split_result.strategy == "heuristic_fallback":
             fallbacks.append(f"newsletter_split:{item.url}")
         if len(split_result.items) > 1:
+            split_result.items = [
+                self._inherit_parent_metadata(item, split_item) for split_item in split_result.items
+            ]
             split_result.artifact_paths = self.store.write_split_items(
                 output_path,
                 run_id,
@@ -309,23 +368,21 @@ class PipelineRunner:
             fallbacks=fallbacks,
         )
 
-    async def _summarize_split_items(
+    async def _extract_story_cards_for_split_items(
         self,
         *,
         items: list[CrawlItem],
         output_path: Path,
         run_id: str,
-        date_value,
-        date_inferred: bool,
-    ) -> SummaryExecutionResult:
+    ) -> StoryCardExecutionResult:
         debug_paths: list[Path] = []
-        summaries: list[SummaryItem] = []
+        story_cards: list[StoryCard] = []
         validation_failures: list[str] = []
         errors: list[str] = []
 
         for item in items:
             try:
-                summary = await self._summarize_item(
+                story_card = await self._extract_story_card(
                     item=item,
                     output_path=output_path,
                     run_id=run_id,
@@ -339,27 +396,25 @@ class PipelineRunner:
                 errors.append(str(exc))
                 continue
 
-            summary.date = date_value
-            summary.date_inferred = date_inferred
-            summaries.append(summary)
+            story_cards.append(story_card)
 
-        return SummaryExecutionResult(
-            summaries=summaries,
+        return StoryCardExecutionResult(
+            story_cards=story_cards,
             validation_failures=validation_failures,
             errors=errors,
             debug_paths=debug_paths,
         )
 
-    async def _summarize_item(
+    async def _extract_story_card(
         self,
         *,
         item: CrawlItem,
         output_path: Path,
         run_id: str,
         debug_paths: list[Path],
-    ) -> SummaryItem:
+    ) -> StoryCard:
         debug_paths.append(self.store.write_debug_input(output_path, run_id, item))
-        return await summarize_article_async(self.llm_client, item)
+        return await extract_story_card_async(self.llm_client, item)
 
     def _excluded_result(
         self,
@@ -373,7 +428,7 @@ class PipelineRunner:
         debug_paths: list[Path] | None = None,
     ) -> UrlProcessingResult:
         return UrlProcessingResult(
-            summaries=[],
+            story_cards=[],
             excluded=[ExcludedItem(url=url, reason=reason, stage=stage)],
             newsletter_splits=newsletter_splits or [],
             validation_failures=validation_failures or [],
@@ -383,6 +438,33 @@ class PipelineRunner:
 
     def _emit(self, stage: str, message: str = "") -> None:
         self.event_sink.emit(PipelineEvent(stage=stage, message=message))
+
+    def _inherit_parent_metadata(self, parent_item: CrawlItem, split_item: CrawlItem) -> CrawlItem:
+        merged_metadata = dict(parent_item.metadata)
+        merged_metadata.update(split_item.metadata)
+        inherited_item = CrawlItem(
+            url=split_item.url,
+            text=split_item.text,
+            metadata=merged_metadata,
+            title=split_item.title or parent_item.title,
+            origin_url=split_item.origin_url or parent_item.origin_url or parent_item.url,
+            title_raw=split_item.title_raw
+            or parent_item.title_raw
+            or split_item.title
+            or parent_item.title,
+            source_name=split_item.source_name or parent_item.source_name,
+            source_family=split_item.source_family or parent_item.source_family,
+            published_at=split_item.published_at or parent_item.published_at,
+            published_at_inferred=split_item.published_at_inferred
+            if split_item.published_at is not None
+            else parent_item.published_at_inferred,
+            content_type=split_item.content_type or parent_item.content_type,
+            crawl_quality_flags=list(
+                split_item.crawl_quality_flags or parent_item.crawl_quality_flags
+            ),
+            blocked_or_partial=split_item.blocked_or_partial or parent_item.blocked_or_partial,
+        )
+        return prepare_crawl_item(inherited_item)
 
     def _collect_llm_usage(self) -> dict[str, object]:
         get_usage_summary = getattr(self.llm_client, "get_usage_summary", None)
@@ -419,10 +501,10 @@ class PipelineRunner:
     def _build_no_valid_articles_message(
         self,
         *,
-        summary_stage_result: SummaryStageResult,
+        story_card_result: StoryCardStageResult,
         validation_failures: list[str],
     ) -> str:
-        base_message = "No valid articles after crawl/summarization."
+        base_message = "No valid articles after crawl/story-card extraction."
         reason_candidates: list[str] = []
 
         for failure in validation_failures:
@@ -430,7 +512,7 @@ class PipelineRunner:
             if normalized_reason:
                 reason_candidates.append(normalized_reason)
 
-        for excluded_item in summary_stage_result.excluded:
+        for excluded_item in story_card_result.excluded:
             if excluded_item.reason:
                 reason_candidates.append(excluded_item.reason)
 

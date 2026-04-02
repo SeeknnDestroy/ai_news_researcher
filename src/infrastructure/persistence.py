@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
-from ..domain.contracts import DraftOutline, JudgeEvaluation
+from ..domain.contracts import DraftOutline, JudgeEvaluation, ThemeAssignmentPlan
 from ..domain.models import (
     CrawlItem,
     CrawlStageResult,
     DraftWorkflowResult,
-    ExcludedItem,
     InputLoadResult,
-    NewsletterSplitResult,
     PersistenceResult,
     PipelinePaths,
     PipelineRunMetadata,
-    SummaryItem,
-    SummaryStageResult,
+    StoryCard,
+    StoryCardStageResult,
+    StorySetResult,
+    StoryUnit,
 )
 from ..storage_paths import artifacts_root_for_output, dated_report_path, resolve_input_path
 from ..utils import format_date, slugify_url
@@ -31,9 +31,13 @@ class FileSystemPipelineStore:
         input_path = resolve_input_path(target_date, base_dir=base_dir)
         output_path = dated_report_path(target_date, base_dir=base_dir)
         artifact_root = artifacts_root_for_output(output_path)
-        return PipelinePaths(input_path=input_path, output_path=output_path, artifact_root=artifact_root)
+        return PipelinePaths(
+            input_path=input_path, output_path=output_path, artifact_root=artifact_root
+        )
 
-    def write_raw_texts(self, out_path: str | Path, crawl_items: Iterable[CrawlItem], run_id: str) -> Path:
+    def write_raw_texts(
+        self, out_path: str | Path, crawl_items: Iterable[CrawlItem], run_id: str
+    ) -> Path:
         raw_dir = artifacts_root_for_output(out_path) / "raw" / run_id
         raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,20 +103,26 @@ class FileSystemPipelineStore:
         paths: PipelinePaths,
         input_result: InputLoadResult,
         crawl_result: CrawlStageResult,
-        summary_result: SummaryStageResult,
+        story_card_result: StoryCardStageResult,
+        story_set_result: StorySetResult,
         draft_result: DraftWorkflowResult,
         metadata: PipelineRunMetadata,
+        raw_dir: Path | None,
     ) -> Path:
         artifact_path = paths.artifact_root / f"run_{metadata.run_id}.json"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._artifact_payload(
             input_result=input_result,
             crawl_result=crawl_result,
-            summary_result=summary_result,
+            story_card_result=story_card_result,
+            story_set_result=story_set_result,
             draft_result=draft_result,
             metadata=metadata,
+            raw_dir=raw_dir,
         )
-        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifact_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return artifact_path
 
     def persist_run(
@@ -121,7 +131,8 @@ class FileSystemPipelineStore:
         paths: PipelinePaths,
         input_result: InputLoadResult,
         crawl_result: CrawlStageResult,
-        summary_result: SummaryStageResult,
+        story_card_result: StoryCardStageResult,
+        story_set_result: StorySetResult,
         draft_result: DraftWorkflowResult,
         metadata: PipelineRunMetadata,
         raw_dir: Path | None = None,
@@ -132,9 +143,11 @@ class FileSystemPipelineStore:
             paths=paths,
             input_result=input_result,
             crawl_result=crawl_result,
-            summary_result=summary_result,
+            story_card_result=story_card_result,
+            story_set_result=story_set_result,
             draft_result=draft_result,
             metadata=metadata,
+            raw_dir=raw_dir,
         )
         return PersistenceResult(
             report_path=report_path,
@@ -148,9 +161,11 @@ class FileSystemPipelineStore:
         *,
         input_result: InputLoadResult,
         crawl_result: CrawlStageResult,
-        summary_result: SummaryStageResult,
+        story_card_result: StoryCardStageResult,
+        story_set_result: StorySetResult,
         draft_result: DraftWorkflowResult,
         metadata: PipelineRunMetadata,
+        raw_dir: Path | None,
     ) -> dict:
         return {
             "input": {
@@ -161,12 +176,37 @@ class FileSystemPipelineStore:
             "crawl": {
                 "ok_count": len(crawl_result.items),
                 "failure_count": len(crawl_result.failures),
-                "failures": [{"url": item.url, "reason": item.reason} for item in crawl_result.failures],
+                "failures": [
+                    {"url": item.url, "reason": item.reason} for item in crawl_result.failures
+                ],
             },
-            "summaries": [self._serialize_summary(item) for item in summary_result.summaries],
+            "story_cards": [
+                self._serialize_story_card(item, raw_dir=raw_dir)
+                for item in story_card_result.story_cards
+            ],
+            "story_units": [
+                self._serialize_story_unit(item) for item in story_set_result.story_units
+            ],
+            "candidate_pairs": [
+                {
+                    "left_url": item.left_url,
+                    "right_url": item.right_url,
+                    "reason_codes": item.reason_codes,
+                }
+                for item in story_set_result.candidate_pairs
+            ],
+            "merge_decisions": [
+                {
+                    "left_url": item.left_url,
+                    "right_url": item.right_url,
+                    "decision": item.decision,
+                    "rationale": item.rationale,
+                }
+                for item in story_set_result.merge_decisions
+            ],
             "excluded": [
                 {"url": item.url, "reason": item.reason, "stage": item.stage}
-                for item in summary_result.excluded
+                for item in story_card_result.excluded
             ],
             "newsletter_splits": [
                 {
@@ -176,9 +216,10 @@ class FileSystemPipelineStore:
                     "paths": split.artifact_paths,
                     "item_count": len(split.items),
                 }
-                for split in summary_result.newsletter_splits
+                for split in story_card_result.newsletter_splits
             ],
             "workflow": {
+                "theme_plan": self._serialize_theme_plan(draft_result.theme_plan),
                 "outline": self._serialize_outline(draft_result.outline),
                 "evaluation": self._serialize_evaluation(draft_result.evaluation),
                 "critique": draft_result.critique,
@@ -196,19 +237,55 @@ class FileSystemPipelineStore:
             },
         }
 
-    def _serialize_summary(self, item: SummaryItem) -> dict:
+    def _serialize_story_card(self, item: StoryCard, *, raw_dir: Path | None) -> dict:
+        raw_text_path = None
+        if raw_dir is not None:
+            raw_text_path = raw_dir / f"{slugify_url(item.url)}.txt"
         return {
             "url": item.url,
             "origin_url": item.origin_url,
             "source_name": item.source_name,
-            "title": item.title,
-            "date": format_date(item.date),
-            "date_inferred": item.date_inferred,
-            "summary_tr": item.summary_tr,
+            "title_raw": item.title_raw,
+            "published_at": format_date(item.published_at),
+            "published_at_inferred": item.published_at_inferred,
+            "content_type": item.content_type,
+            "crawl_quality_flags": item.crawl_quality_flags,
+            "blocked_or_partial": item.blocked_or_partial,
+            "source_family": item.source_family,
+            "story_title_tr": item.story_title_tr,
+            "story_type": item.story_type,
+            "key_facts": item.key_facts,
+            "must_keep_entities": item.must_keep_entities,
+            "must_keep_facts": item.must_keep_facts,
             "why_it_matters_tr": item.why_it_matters_tr,
-            "tags": item.tags,
+            "technical_relevance": item.technical_relevance,
+            "strategic_relevance": item.strategic_relevance,
+            "confidence": item.confidence,
+            "raw_text_path": str(raw_text_path) if raw_text_path is not None else None,
+        }
+
+    def _serialize_story_unit(self, item: StoryUnit) -> dict:
+        return {
+            "story_unit_id": item.story_unit_id,
+            "primary_url": item.primary_url,
+            "supporting_url": item.supporting_url,
+            "merge_relation": item.merge_relation,
+            "news_urls_included": item.news_urls_included,
+            "canonical_title": item.canonical_title,
+            "canonical_story_type": item.canonical_story_type,
+            "key_facts": item.key_facts,
+            "must_keep_entities": item.must_keep_entities,
+            "must_keep_facts": item.must_keep_facts,
+            "why_it_matters_tr": item.why_it_matters_tr,
+            "technical_relevance": item.technical_relevance,
+            "strategic_relevance": item.strategic_relevance,
             "confidence": item.confidence,
         }
+
+    def _serialize_theme_plan(self, theme_plan: ThemeAssignmentPlan | None) -> dict | None:
+        if theme_plan is None:
+            return None
+        return theme_plan.model_dump(mode="json")
 
     def _serialize_outline(self, outline: DraftOutline) -> dict:
         return outline.model_dump(mode="json")
